@@ -1,0 +1,54 @@
+# ==========================================================================
+# ClipForge - dependencias do backend (Python 3.10+)
+#
+# INSTALACAO COM CUDA (recomendado, GPU Nvidia):
+#
+#   python -m venv .venv
+#   .venv\Scripts\activate            (Windows)   |   source .venv/bin/activate  (Linux)
+#   pip install --upgrade pip
+#   pip install -r backend/requirements.txt
+#
+# O faster-whisper usa CTranslate2, que NAO depende do PyTorch. Ele precisa
+# apenas das libs cuBLAS/cuDNN. No Windows a forma mais simples de obte-las e
+# instalar os wheels da Nvidia (ja listados abaixo) e apontar o PATH para elas
+# (o modulo app/utils/cuda.py faz isso automaticamente no import).
+# ==========================================================================
+
+# --- API / servidor ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+websockets==14.1
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+
+# --- Transcricao ---
+faster-whisper==1.1.1
+ctranslate2==4.5.0
+
+# --- Runtime CUDA para o CTranslate2 (cuBLAS + cuDNN 9) ---
+# Comente estas duas linhas se voce ja tem CUDA/cuDNN instalados no sistema.
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cudnn-cu12==9.6.0.74
+
+# --- Visao computacional / reframe ---
+mediapipe==0.10.20
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+
+# --- Midia ---
+# NAO fixe o yt-dlp numa versao antiga. O YouTube muda a extracao de assinatura
+# com frequencia, e uma versao velha simplesmente para de enxergar os formatos
+# de video ("Requested format is not available", so storyboards na lista).
+# Mantenha atualizado com:  pip install --upgrade yt-dlp
+yt-dlp>=2026.8.19
+ffmpeg-python==0.2.0
+moviepy==1.0.3
+
+# --- LLM ---
+httpx==0.28.1
+
+# --- CLI / logging ---
+rich==13.9.4
+typer==0.15.1

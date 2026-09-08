@@ -1,0 +1,38 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Node ---
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- Ambiente ---
+.env
+.env.local
+
+# --- Saidas de midia (podem ter varios GB) ---
+output/**
+!output/.gitkeep
+!output/clips/.gitkeep
+!output/cache/.gitkeep
+!output/transcripts/.gitkeep
+!output/uploads/.gitkeep
+
+# --- Modelos baixados ---
+models/
+*.bin
+*.onnx
+
+# --- Editores / SO ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
