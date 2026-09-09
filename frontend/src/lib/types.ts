@@ -37,6 +37,78 @@ export interface RenderedClip extends ClipCandidate {
   created_at?: number;
 }
 
+export type AspectRatio = "9:16" | "4:5" | "1:1" | "16:9";
+export type ReframeMode =
+  | "auto"
+  | "single"
+  | "split"
+  | "center"
+  | "manual"
+  | "composite";
+
+/** Uma faixa do layout empilhado, em frações do frame de origem (0-1). */
+export interface LayoutRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Fração da altura final ocupada por esta faixa. */
+  weight: number;
+  label: string;
+}
+
+/** O que a análise recomenda para um trecho. */
+export interface LayoutSuggestion {
+  mode: ReframeMode;
+  aspect_ratio: AspectRatio;
+  reason: string;
+  confidence: number;
+  regions: LayoutRegion[];
+  faces_detected: number;
+}
+
+export interface MediaInfo {
+  path: string;
+  title: string;
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  has_audio: boolean;
+  source_url: string | null;
+}
+
+/** Ajustes que o editor manda de volta para o backend renderizar. */
+export interface RenderRequest {
+  start_time: number;
+  end_time: number;
+  title?: string;
+  /** Um arquivo é gerado para cada formato desta lista. */
+  aspect_ratios: AspectRatio[];
+  reframe_mode: ReframeMode;
+  /** 0 = enquadramento na esquerda, 1 = na direita. Só vale no modo manual. */
+  manual_offset?: number | null;
+  /** Faixas empilhadas, de cima para baixo. Exigido no modo composite. */
+  regions?: LayoutRegion[] | null;
+  burn_subtitles: boolean;
+}
+
+export interface RenderResponse {
+  clips: (RenderedClip & { aspect_ratio: AspectRatio })[];
+}
+
+export interface FormatOption {
+  value: AspectRatio;
+  width: number;
+  height: number;
+  label: string;
+}
+
+export interface FormatsResponse {
+  formats: FormatOption[];
+  reframe_modes: { value: ReframeMode; label: string }[];
+}
+
 export interface Job {
   id: string;
   source: string;
@@ -51,6 +123,9 @@ export interface Job {
   clips: RenderedClip[];
   candidates: ClipCandidate[];
   result: unknown | null;
+  media: MediaInfo | null;
+  /** O vídeo de origem ainda está no disco: dá para pré-visualizar e reeditar. */
+  has_source: boolean;
 }
 
 export interface Health {
@@ -79,7 +154,7 @@ export interface JobRequest {
 
 /** Evento recebido pelo WebSocket de progresso. */
 export interface ProgressEvent {
-  type: "snapshot" | "progress" | "done" | "error";
+  type: "snapshot" | "status" | "progress" | "done" | "error";
   job_id?: string;
   stage?: string;
   stage_label?: string;
@@ -90,4 +165,7 @@ export interface ProgressEvent {
   candidates?: ClipCandidate[];
   clips?: RenderedClip[];
   error?: string | null;
+  media?: MediaInfo | null;
+  has_source?: boolean;
+  transcript_path?: string;
 }

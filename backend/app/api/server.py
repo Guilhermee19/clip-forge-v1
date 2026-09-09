@@ -15,6 +15,7 @@ import asyncio
 import json
 import shutil
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -31,10 +32,14 @@ from app.api.schemas import (
     HealthResponse,
     JobCreateRequest,
     JobSummary,
+    RenderRequest,
+    RenderResponse,
+    SuggestionResponse,
 )
 from app.config import settings
-from app.core import analyzer, ingest
+from app.core import analyzer, ingest, reframer, renderer, transcriber
 from app.core.pipeline import PipelineOptions
+from app.models import AspectRatio, ClipCandidate, LayoutRegion
 from app.utils import ffmpeg
 from app.utils.cuda import resolve_device
 from app.utils.logging import get_logger, setup_logging
@@ -42,6 +47,13 @@ from app.utils.logging import get_logger, setup_logging
 logger = get_logger(__name__)
 
 manager = jobs_module.manager
+
+# Estados em que nao virao mais eventos: o WebSocket encerra em vez de esperar.
+_TERMINAL_STATUSES = {
+    jobs_module.JobStatus.COMPLETED,
+    jobs_module.JobStatus.FAILED,
+    jobs_module.JobStatus.CANCELLED,
+}
 
 
 @asynccontextmanager
@@ -209,6 +221,13 @@ async def job_events(websocket: WebSocket, job_id: str) -> None:
         for event in list(job.events):
             await websocket.send_json({"type": "progress", "job_id": job_id, **event})
 
+        # O job pode ter terminado antes de este cliente conectar (recarregar a
+        # pagina, por exemplo). Sem este `done`, o cliente ficaria esperando um
+        # evento que ja passou.
+        if job.status in _TERMINAL_STATUSES:
+            await websocket.send_json({"type": "done", **job.snapshot()})
+            return
+
         while True:
             payload = await queue.get()
             await websocket.send_json(payload)
@@ -221,6 +240,192 @@ async def job_events(websocket: WebSocket, job_id: str) -> None:
         logger.warning("WebSocket do job %s encerrado: %s", job_id, exc)
     finally:
         manager.unsubscribe(job_id, queue)
+
+
+# ---------------------------------------------------------------------------
+# Edicao de cortes: previa e renderizacao sob medida
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/jobs/{job_id}/source", tags=["edicao"])
+def job_source(job_id: str) -> FileResponse:
+    """Serve o video de origem do job, para a previa no editor.
+
+    O `FileResponse` do Starlette responde a `Range`, entao o player consegue
+    pular direto para o trecho do corte sem baixar o arquivo inteiro — o que
+    importa quando a live tem 15 GB.
+    """
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job nao encontrado.")
+    if not job.media or not job.media.get("path"):
+        raise HTTPException(status_code=409, detail="A midia deste job ainda nao foi preparada.")
+
+    path = Path(job.media["path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Arquivo de origem nao esta mais no disco.")
+
+    return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+
+@app.get("/api/jobs/{job_id}/suggest", response_model=SuggestionResponse, tags=["edicao"])
+def suggest_layout(job_id: str, start: float, end: float) -> SuggestionResponse:
+    """Recomenda layout e formato para um trecho, antes de o usuario decidir.
+
+    Detecta rostos em alguns segundos do meio do corte. Um rosto pequeno e
+    encostado numa borda quase sempre e webcam sobre captura de tela — nesse
+    caso a resposta ja vem com as duas faixas prontas para o layout empilhado.
+    """
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job nao encontrado.")
+    if not job.media or not Path(job.media.get("path", "")).is_file():
+        raise HTTPException(status_code=409, detail="A midia deste job nao esta disponivel.")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Intervalo invalido.")
+
+    try:
+        suggestion = reframer.suggest_layout(job.media["path"], start, end)
+    except Exception as exc:
+        logger.exception("Sugestao de layout falhou")
+        raise HTTPException(status_code=500, detail=f"Falha ao analisar: {exc}") from exc
+
+    return SuggestionResponse(**suggestion.to_dict())
+
+
+@app.post("/api/jobs/{job_id}/render", response_model=RenderResponse, tags=["edicao"])
+def render_edited_clip(job_id: str, payload: RenderRequest) -> RenderResponse:
+    """Renderiza o corte, um arquivo por formato pedido.
+
+    Reaproveita o video e a transcricao que o job ja produziu: so o encode do
+    trecho e refeito, o que leva segundos em vez de repetir a pipeline inteira.
+    O plano de enquadramento e calculado uma vez por formato — a proporcao muda
+    a janela de crop, entao nao da para reaproveitar entre formatos diferentes.
+    """
+    job = manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job nao encontrado.")
+    if not job.media or not Path(job.media.get("path", "")).is_file():
+        raise HTTPException(status_code=409, detail="A midia deste job nao esta disponivel.")
+    if payload.end_time <= payload.start_time:
+        raise HTTPException(status_code=400, detail="O fim do corte precisa vir depois do inicio.")
+    if payload.reframe_mode == "composite" and not payload.regions:
+        raise HTTPException(
+            status_code=400, detail="O layout composto exige ao menos uma faixa."
+        )
+
+    media_path = job.media["path"]
+
+    regions = (
+        [
+            LayoutRegion(
+                x=r.x, y=r.y, width=r.width, height=r.height, weight=r.weight, label=r.label
+            )
+            for r in payload.regions
+        ]
+        if payload.regions
+        else None
+    )
+
+    # Legenda e transcricao sao os mesmos para todos os formatos.
+    words: list = []
+    transcript_text = ""
+    if payload.burn_subtitles and job.transcript_path:
+        transcript = transcriber.load_transcript(job.transcript_path)
+        if transcript is not None:
+            words = transcript.words_between(payload.start_time, payload.end_time)
+            transcript_text = transcript.text_between(payload.start_time, payload.end_time)
+
+    rendered: list[dict[str, Any]] = []
+
+    for value in payload.aspect_ratios:
+        aspect = AspectRatio(value)
+        candidate = ClipCandidate(
+            id=uuid.uuid4().hex[:8],
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+            title=payload.title or f"Corte {payload.start_time:.0f}s",
+            virality_score=0.0,
+            final_score=0.0,
+            transcript_text=transcript_text,
+        )
+
+        logger.info(
+            "Render do job %s: %.1f-%.1fs, %s, modo=%s",
+            job_id,
+            payload.start_time,
+            payload.end_time,
+            value,
+            payload.reframe_mode,
+        )
+
+        try:
+            plan = reframer.build_plan(
+                media_path,
+                payload.start_time,
+                payload.end_time,
+                mode=payload.reframe_mode,
+                aspect_ratio=aspect.ratio,
+                manual_offset=payload.manual_offset,
+                regions=regions,
+            )
+            clip = renderer.render_clip(
+                media_path,
+                candidate,
+                plan,
+                words=words,
+                burn_subtitles=payload.burn_subtitles,
+                output_size=aspect.size(),
+            )
+        except Exception as exc:
+            logger.exception("Render sob medida falhou (%s)", value)
+            raise HTTPException(
+                status_code=500, detail=f"Falha ao renderizar {value}: {exc}"
+            ) from exc
+
+        thumbnail = Path(clip.thumbnail_path).name if clip.thumbnail_path else None
+        rendered.append(
+            {
+                **clip.to_dict(),
+                "aspect_ratio": value,
+                "media_url": f"/media/{Path(clip.video_path).name}",
+                "thumbnail_url": f"/media/{thumbnail}" if thumbnail else None,
+            }
+        )
+
+    return RenderResponse(clips=rendered)
+
+
+@app.get("/api/formats", tags=["edicao"])
+def list_formats() -> dict[str, Any]:
+    """Formatos de saida disponiveis, para a UI montar o seletor."""
+    return {
+        "formats": [
+            {
+                "value": ratio.value,
+                "width": ratio.size()[0],
+                "height": ratio.size()[1],
+                "label": _FORMAT_LABELS[ratio],
+            }
+            for ratio in AspectRatio
+        ],
+        "reframe_modes": [
+            {"value": "auto", "label": "Automatico"},
+            {"value": "single", "label": "Seguir o falante"},
+            {"value": "split", "label": "Split-screen"},
+            {"value": "center", "label": "Centro fixo"},
+            {"value": "manual", "label": "Posicao manual"},
+            {"value": "composite", "label": "Gameplay + webcam"},
+        ],
+    }
+
+
+_FORMAT_LABELS = {
+    AspectRatio.VERTICAL: "9:16 — TikTok, Reels, Shorts",
+    AspectRatio.PORTRAIT: "4:5 — feed do Instagram",
+    AspectRatio.SQUARE: "1:1 — quadrado",
+    AspectRatio.LANDSCAPE: "16:9 — YouTube",
+}
 
 
 # ---------------------------------------------------------------------------

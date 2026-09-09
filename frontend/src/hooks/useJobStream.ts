@@ -67,6 +67,8 @@ export function useJobStream(jobId: string | null): JobStream {
               clips: [],
               candidates: [],
               result: null,
+              media: null,
+              has_source: false,
             } as Job);
 
           const clips: RenderedClip[] = event.clip
@@ -81,6 +83,8 @@ export function useJobStream(jobId: string | null): JobStream {
             message: event.message ?? base.message,
             error: event.error ?? base.error,
             candidates: event.candidates ?? base.candidates,
+            media: event.media ?? base.media,
+            has_source: event.has_source ?? base.has_source,
             clips,
           };
         });

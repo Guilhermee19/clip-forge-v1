@@ -29,7 +29,13 @@ from pathlib import Path
 import numpy as np
 
 from app.config import settings
-from app.models import CropKeyframe, ReframeMode, ReframePlan
+from app.models import (
+    CropKeyframe,
+    LayoutRegion,
+    LayoutSuggestion,
+    ReframeMode,
+    ReframePlan,
+)
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -443,21 +449,49 @@ def build_plan(
     end: float,
     *,
     mode: str | None = None,
+    aspect_ratio: float | None = None,
+    manual_offset: float | None = None,
+    regions: list[LayoutRegion] | None = None,
     on_progress: ProgressFn | None = None,
 ) -> ReframePlan:
-    """Monta o plano de reenquadramento 9:16 de um trecho do video.
+    """Monta o plano de reenquadramento de um trecho do video.
 
     Args:
         video_path: video de origem (16:9 ou qualquer proporcao horizontal).
         start / end: intervalo do corte, em segundos.
-        mode: `auto`, `single`, `split` ou `center`. `None` usa o `.env`.
+        mode: `auto`, `single`, `split`, `center` ou `manual`. `None` usa o `.env`.
+        aspect_ratio: proporcao alvo (largura/altura). `None` usa a do `.env`.
+        manual_offset: posicao horizontal fixa do enquadramento, de 0.0
+            (encostado a esquerda) a 1.0 (a direita). Quando informado, nem
+            roda a deteccao de rosto — o usuario ja disse onde quer a camera.
+        regions: faixas do layout composto (gameplay + webcam), de cima para
+            baixo. So valem no modo `composite`.
         on_progress: callback `(fracao, mensagem)`.
 
     Returns:
         Um `ReframePlan` pronto para o renderer.
     """
     mode = (mode or settings.reframe_mode).lower()
-    target_ratio = settings.output_width / settings.output_height  # 0.5625 em 9:16
+    target_ratio = aspect_ratio or (settings.output_width / settings.output_height)
+
+    # Composicao por regioes tambem dispensa deteccao: as faixas ja vieram
+    # prontas da interface (ou da sugestao automatica).
+    if mode == "composite":
+        if not regions:
+            raise ValueError("O modo 'composite' exige ao menos uma regiao.")
+        from app.utils import ffmpeg as ffmpeg_utils
+
+        info = ffmpeg_utils.probe(video_path)
+        return _composite_plan(info.width, info.height, regions)
+
+    # Enquadramento manual dispensa MediaPipe: e uma janela fixa.
+    if manual_offset is not None or mode == "manual":
+        from app.utils import ffmpeg as ffmpeg_utils
+
+        info = ffmpeg_utils.probe(video_path)
+        return _manual_plan(
+            info.width, info.height, target_ratio, manual_offset if manual_offset is not None else 0.5
+        )
 
     detections, source_w, source_h = ([], 0, 0)
     if mode != "center":
@@ -500,6 +534,206 @@ def build_plan(
 
     # ------------------------------------------------ camera unica (single)
     return _single_plan(tracks, sampled_times, source_w, source_h, target_ratio, start, end)
+
+
+def suggest_layout(
+    video_path: str | Path,
+    start: float,
+    end: float,
+    *,
+    sample_seconds: float = 6.0,
+) -> LayoutSuggestion:
+    """Analisa o trecho e recomenda um layout de saida.
+
+    Le apenas alguns segundos do meio do corte — o suficiente para saber quantas
+    pessoas aparecem e onde, sem pagar o custo de varrer o trecho inteiro.
+
+    A regra que mais importa e a do corte de gameplay: quando ha um unico rosto
+    pequeno e encostado numa borda, e quase certo que seja uma webcam sobre a
+    captura de tela. Nesse caso, um crop vertical simples jogaria fora o jogo ou
+    a pessoa; o certo e empilhar os dois.
+    """
+    middle = start + (end - start) / 2
+    window_start = max(start, middle - sample_seconds / 2)
+    window_end = min(end, window_start + sample_seconds)
+
+    detections, source_w, source_h = detect_faces(
+        video_path, window_start, window_end, detect_speaker=False
+    )
+    sampled = sorted({round(d.t, 3) for d in detections})
+    tracks = _significant_tracks(build_tracks(detections), len(sampled))
+
+    # ------------------------------------------------------ nenhum rosto
+    if not tracks:
+        return LayoutSuggestion(
+            mode="center",
+            aspect_ratio="9:16",
+            reason="Nenhum rosto detectado no trecho; o crop central preserva o meio da tela.",
+            confidence=0.4,
+            faces_detected=0,
+        )
+
+    # ------------------------------------------------- webcam + gameplay
+    if len(tracks) == 1:
+        face = tracks[0]
+        widths = [d.width for d in face.detections]
+        face_width = float(np.median(widths))
+        cx, cy = face.mean_x, face.mean_y
+
+        # Rosto pequeno = a pessoa nao ocupa o quadro; encostado na borda =
+        # provavelmente um overlay de webcam num canto.
+        is_small = face_width < 0.16
+        near_edge = min(cx, 1 - cx) < 0.3 or min(cy, 1 - cy) < 0.3
+
+        if is_small and near_edge:
+            return LayoutSuggestion(
+                mode="composite",
+                aspect_ratio="9:16",
+                reason=(
+                    "Rosto pequeno junto da borda: parece webcam sobre captura de tela. "
+                    "O layout empilha o conteudo principal e a webcam."
+                ),
+                confidence=0.8,
+                regions=_gameplay_regions(face, source_w, source_h),
+                faces_detected=1,
+            )
+
+        return LayoutSuggestion(
+            mode="single",
+            aspect_ratio="9:16",
+            reason="Uma pessoa em quadro: a camera virtual acompanha o rosto.",
+            confidence=0.85,
+            faces_detected=1,
+        )
+
+    # ------------------------------------------------------ duas pessoas
+    spread = abs(tracks[0].mean_x - tracks[-1].mean_x)
+    if spread > 0.22:
+        return LayoutSuggestion(
+            mode="split",
+            aspect_ratio="9:16",
+            reason=f"{len(tracks)} pessoas afastadas na horizontal; split-screen mostra as duas.",
+            confidence=0.8,
+            faces_detected=len(tracks),
+        )
+
+    return LayoutSuggestion(
+        mode="single",
+        aspect_ratio="9:16",
+        reason=f"{len(tracks)} pessoas proximas; uma camera unica cobre as duas.",
+        confidence=0.6,
+        faces_detected=len(tracks),
+    )
+
+
+def _gameplay_regions(face: Track, source_w: int, source_h: int) -> list[LayoutRegion]:
+    """Propoe as duas faixas de um corte de gameplay: conteudo e webcam.
+
+    A faixa da webcam e um retangulo em volta do rosto, generoso o bastante para
+    pegar ombros e cenario. A do conteudo pega a area central da tela, que e
+    onde a acao costuma acontecer.
+    """
+    widths = [d.width for d in face.detections]
+    heights = [d.height for d in face.detections]
+    face_w = float(np.median(widths))
+    face_h = float(np.median(heights))
+
+    # A janela da webcam tem 4:3 e cerca de 3x a largura do rosto.
+    cam_w = float(np.clip(face_w * 3.2, 0.18, 0.5))
+    cam_h = float(np.clip(face_h * 3.0, 0.2, 0.6))
+    cam_x = float(np.clip(face.mean_x - cam_w / 2, 0.0, 1.0 - cam_w))
+    cam_y = float(np.clip(face.mean_y - cam_h * 0.45, 0.0, 1.0 - cam_h))
+
+    # O conteudo ocupa a maior parte da tela; recortamos o centro dela.
+    content_w = 0.7
+    content_h = 0.62
+    content_x = float(np.clip(0.5 - content_w / 2, 0.0, 1.0 - content_w))
+    # Empurra o recorte do conteudo para o lado oposto ao da webcam, para nao
+    # repetir a mesma area nas duas faixas.
+    if face.mean_x < 0.5:
+        content_x = min(1.0 - content_w, content_x + 0.12)
+    else:
+        content_x = max(0.0, content_x - 0.12)
+    content_y = float(np.clip(0.5 - content_h / 2, 0.0, 1.0 - content_h))
+
+    return [
+        LayoutRegion(
+            x=round(content_x, 4),
+            y=round(content_y, 4),
+            width=round(content_w, 4),
+            height=round(content_h, 4),
+            weight=0.62,
+            label="Conteudo",
+        ),
+        LayoutRegion(
+            x=round(cam_x, 4),
+            y=round(cam_y, 4),
+            width=round(cam_w, 4),
+            height=round(cam_h, 4),
+            weight=0.38,
+            label="Webcam",
+        ),
+    ]
+
+
+def _composite_plan(
+    source_w: int, source_h: int, regions: list[LayoutRegion]
+) -> ReframePlan:
+    """Plano de composicao: varias faixas do frame empilhadas na vertical."""
+    normalized = _normalize_weights(regions)
+    return ReframePlan(
+        mode=ReframeMode.COMPOSITE,
+        source_width=source_w,
+        source_height=source_h,
+        crop_width=source_w,
+        crop_height=source_h,
+        regions=normalized,
+        faces_detected=0,
+    )
+
+
+def _normalize_weights(regions: list[LayoutRegion]) -> list[LayoutRegion]:
+    """Garante que os pesos das faixas somem 1.0."""
+    total = sum(max(r.weight, 0.0) for r in regions)
+    if total <= 0:
+        share = 1.0 / max(len(regions), 1)
+        return [
+            LayoutRegion(r.x, r.y, r.width, r.height, share, r.label) for r in regions
+        ]
+    return [
+        LayoutRegion(r.x, r.y, r.width, r.height, max(r.weight, 0.0) / total, r.label)
+        for r in regions
+    ]
+
+
+def _crop_size(source_w: int, source_h: int, target_ratio: float) -> tuple[int, int]:
+    """Maior janela com a proporcao pedida que cabe dentro do frame de origem."""
+    crop_w = _even(min(source_w, source_h * target_ratio))
+    crop_h = _even(min(source_h, crop_w / target_ratio))
+    return crop_w, crop_h
+
+
+def _manual_plan(
+    source_w: int, source_h: int, target_ratio: float, offset: float
+) -> ReframePlan:
+    """Janela fixa na posicao horizontal escolhida pelo usuario.
+
+    `offset` e a fracao do curso disponivel: 0.0 encosta o enquadramento na
+    borda esquerda, 1.0 na direita, 0.5 centraliza.
+    """
+    crop_w, crop_h = _crop_size(source_w, source_h, target_ratio)
+    travel = max(source_w - crop_w, 0)
+    x = float(np.clip(offset, 0.0, 1.0)) * travel
+
+    return ReframePlan(
+        mode=ReframeMode.MANUAL,
+        source_width=source_w,
+        source_height=source_h,
+        crop_width=crop_w,
+        crop_height=crop_h,
+        keyframes=[CropKeyframe(t=0.0, x=x, y=(source_h - crop_h) / 2)],
+        faces_detected=0,
+    )
 
 
 def _even(value: float) -> int:

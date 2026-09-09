@@ -43,6 +43,10 @@ class JobSummary(BaseModel):
     clips: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     result: dict[str, Any] | None = None
+    media: dict[str, Any] | None = None
+    # True quando o video de origem ainda esta no disco, ou seja, a previa e a
+    # re-renderizacao de cortes editados estao disponiveis.
+    has_source: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -65,3 +69,69 @@ class ClipListResponse(BaseModel):
     """Cortes ja renderizados que existem no disco."""
 
     clips: list[dict[str, Any]]
+
+
+AspectRatioLiteral = Literal["9:16", "4:5", "1:1", "16:9"]
+ReframeModeLiteral = Literal["auto", "single", "split", "center", "manual", "composite"]
+
+
+class LayoutRegionInput(BaseModel):
+    """Uma faixa do layout composto, em fracoes do frame de origem (0-1)."""
+
+    x: float = Field(..., ge=0.0, le=1.0)
+    y: float = Field(..., ge=0.0, le=1.0)
+    width: float = Field(..., gt=0.0, le=1.0)
+    height: float = Field(..., gt=0.0, le=1.0)
+    weight: float = Field(default=0.5, gt=0.0, le=1.0)
+    label: str = ""
+
+
+class RenderRequest(BaseModel):
+    """Pedido para renderizar um corte com os ajustes feitos na interface.
+
+    Tudo aqui e opcional exceto o intervalo: o que nao vier usa o padrao.
+    Passar mais de um formato em `aspect_ratios` gera um arquivo para cada um,
+    reaproveitando a mesma analise de enquadramento.
+    """
+
+    start_time: float = Field(..., ge=0, description="Inicio do corte, em segundos.")
+    end_time: float = Field(..., gt=0, description="Fim do corte, em segundos.")
+    title: str | None = Field(default=None, max_length=120)
+    aspect_ratios: list[AspectRatioLiteral] = Field(
+        default=["9:16"],
+        min_length=1,
+        max_length=4,
+        description="Um arquivo e gerado para cada formato desta lista.",
+    )
+    reframe_mode: ReframeModeLiteral = "auto"
+    manual_offset: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Posicao horizontal do enquadramento quando reframe_mode='manual': "
+            "0 encosta na esquerda, 1 na direita, 0.5 centraliza."
+        ),
+    )
+    regions: list[LayoutRegionInput] | None = Field(
+        default=None,
+        description="Faixas empilhadas, de cima para baixo. Exigido no modo 'composite'.",
+    )
+    burn_subtitles: bool = True
+
+
+class RenderResponse(BaseModel):
+    """Cortes renderizados, um por formato pedido."""
+
+    clips: list[dict[str, Any]]
+
+
+class SuggestionResponse(BaseModel):
+    """Layout e formato que a analise recomenda para um trecho."""
+
+    mode: str
+    aspect_ratio: str
+    reason: str
+    confidence: float
+    regions: list[dict[str, Any]] = []
+    faces_detected: int = 0

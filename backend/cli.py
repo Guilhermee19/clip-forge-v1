@@ -41,9 +41,13 @@ from rich.table import Table  # noqa: E402
 from app import __version__  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.core.pipeline import PipelineOptions, run as run_pipeline  # noqa: E402
-from app.utils.logging import setup_logging  # noqa: E402
+from app.utils.logging import force_utf8_streams, setup_logging  # noqa: E402
 
-console = Console()
+force_utf8_streams()
+
+# `legacy_windows=False` evita o renderer antigo do console do Windows, que
+# escreve caractere a caractere pela API do Win32 e ignora o encoding do stream.
+console = Console(legacy_windows=False)
 
 
 # ---------------------------------------------------------------------------

@@ -1,25 +1,22 @@
 import { useRef, useState } from "react";
 import { api } from "../lib/api";
-import type { Job, JobRequest } from "../lib/types";
+import type { Job } from "../lib/types";
 
 interface Props {
   onJobCreated: (job: Job) => void;
   disabled: boolean;
 }
 
-const REFRAME_OPTIONS: { value: NonNullable<JobRequest["reframe_mode"]>; label: string }[] = [
-  { value: "auto", label: "Automático" },
-  { value: "single", label: "Seguir o falante" },
-  { value: "split", label: "Split-screen" },
-  { value: "center", label: "Crop central" },
-];
-
-/** Formulário de entrada: link do YouTube/Twitch ou arquivo local. */
+/**
+ * Primeira etapa: encontrar os melhores momentos.
+ *
+ * Aqui não há nada sobre legenda, formato ou enquadramento de propósito —
+ * essas decisões dependem do corte e são tomadas depois, no editor, quando dá
+ * para ver o trecho. Este job só analisa; não renderiza nenhum arquivo.
+ */
 export function JobForm({ onJobCreated, disabled }: Props) {
   const [source, setSource] = useState("");
-  const [minClips, setMinClips] = useState(3);
-  const [reframe, setReframe] = useState<NonNullable<JobRequest["reframe_mode"]>>("auto");
-  const [dryRun, setDryRun] = useState(false);
+  const [minClips, setMinClips] = useState(5);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -34,8 +31,8 @@ export function JobForm({ onJobCreated, disabled }: Props) {
       const job = await api.createJob({
         source: source.trim(),
         min_clips: minClips,
-        reframe_mode: reframe,
-        dry_run: dryRun,
+        // A pipeline só analisa: cada corte é configurado e gerado no editor.
+        dry_run: true,
       });
       onJobCreated(job);
       setSource("");
@@ -77,16 +74,20 @@ export function JobForm({ onJobCreated, disabled }: Props) {
             onChange={(event) => setSource(event.target.value)}
             disabled={disabled || busy}
           />
-          <button type="submit" className="btn-primary shrink-0" disabled={disabled || busy || !source.trim()}>
-            {busy ? "Enviando..." : "Gerar cortes"}
+          <button
+            type="submit"
+            className="btn-primary shrink-0"
+            disabled={disabled || busy || !source.trim()}
+          >
+            {busy ? "Enviando..." : "Encontrar momentos"}
           </button>
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="w-36">
           <label className="label" htmlFor="min-clips">
-            Mínimo de cortes
+            Quantos momentos
           </label>
           <input
             id="min-clips"
@@ -100,54 +101,27 @@ export function JobForm({ onJobCreated, disabled }: Props) {
           />
         </div>
 
-        <div>
-          <label className="label" htmlFor="reframe">
-            Reenquadramento
-          </label>
-          <select
-            id="reframe"
-            className="field"
-            value={reframe}
-            onChange={(event) => setReframe(event.target.value as typeof reframe)}
-            disabled={disabled || busy}
-          >
-            {REFRAME_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex items-end justify-between gap-2">
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-ink-600 bg-ink-800 accent-brand-500"
-              checked={dryRun}
-              onChange={(event) => setDryRun(event.target.checked)}
-              disabled={disabled || busy}
-            />
-            Só analisar
-          </label>
-
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={() => fileInput.current?.click()}
-            disabled={disabled || busy}
-          >
-            Enviar arquivo
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept="video/mp4,video/x-matroska,video/*"
-            className="hidden"
-            onChange={upload}
-          />
-        </div>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => fileInput.current?.click()}
+          disabled={disabled || busy}
+        >
+          Enviar arquivo
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="video/mp4,video/x-matroska,video/*"
+          className="hidden"
+          onChange={upload}
+        />
       </div>
+
+      <p className="text-xs text-slate-500">
+        A análise encontra os melhores trechos. Legenda, formato e reposicionamento você
+        escolhe depois, em cada corte.
+      </p>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
     </form>

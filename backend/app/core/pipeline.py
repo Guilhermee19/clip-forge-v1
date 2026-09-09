@@ -70,10 +70,12 @@ class PipelineResult:
     candidates: list[ClipCandidate]
     clips: list[RenderedClip] = field(default_factory=list)
     elapsed: float = 0.0
+    transcript_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "media": self.media.to_dict(),
+            "transcript_path": self.transcript_path,
             "candidates": [c.to_dict() for c in self.candidates],
             "clips": [c.to_dict() for c in self.clips],
             "elapsed": round(self.elapsed, 1),
@@ -143,7 +145,11 @@ def run(
     reporter.start_stage("ingest")
     media = ingest.ingest(source, on_progress=reporter.callback())
     audio_path = ingest.prepare_audio(media)
-    reporter.emit(1.0, f"'{media.title}' ({media.duration / 60:.1f} min, {media.width}x{media.height})")
+    reporter.emit(
+        1.0,
+        f"'{media.title}' ({media.duration / 60:.1f} min, {media.width}x{media.height})",
+        media=media.to_dict(),
+    )
     reporter.finish_stage("ingest")
 
     # -------------------------------------------------------- 2. transcricao
@@ -161,6 +167,7 @@ def run(
             on_progress=reporter.callback(),
         )
         transcriber.save_transcript(transcript, transcript_path)
+    reporter.emit(1.0, "Transcricao pronta.", transcript_path=str(transcript_path))
     reporter.finish_stage("transcribe")
 
     # ------------------------------------------------------- 3. energia audio
@@ -197,6 +204,7 @@ def run(
             transcript=transcript,
             candidates=candidates,
             elapsed=time.time() - started,
+            transcript_path=str(transcript_path),
         )
 
     # ---------------------------------------------------------- 5. render
@@ -254,6 +262,7 @@ def run(
         candidates=candidates,
         clips=clips,
         elapsed=time.time() - started,
+        transcript_path=str(transcript_path),
     )
 
     manifest = settings.clips_dir / "manifest.json"

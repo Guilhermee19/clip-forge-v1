@@ -153,6 +153,36 @@ class ReframeMode(str, Enum):
     SINGLE = "single"        # uma camera virtual seguindo o falante
     SPLIT = "split"          # duas pessoas empilhadas (split-screen vertical)
     CENTER = "center"        # crop fixo no centro (sem rosto detectado)
+    MANUAL = "manual"        # posicao horizontal escolhida a mao na UI
+    COMPOSITE = "composite"  # varias regioes do frame empilhadas (gameplay + webcam)
+
+
+class AspectRatio(str, Enum):
+    """Formatos de saida oferecidos pela interface.
+
+    A altura de referencia e sempre 1920 nos verticais, o que mantem a legenda
+    e o texto com o mesmo tamanho relativo entre os formatos.
+    """
+
+    VERTICAL = "9:16"    # TikTok, Reels, Shorts
+    PORTRAIT = "4:5"     # feed do Instagram
+    SQUARE = "1:1"       # feed generico
+    LANDSCAPE = "16:9"   # YouTube tradicional
+
+    @property
+    def ratio(self) -> float:
+        width, _, height = self.value.partition(":")
+        return int(width) / int(height)
+
+    def size(self, base_height: int = 1920) -> tuple[int, int]:
+        """Resolucao de saida do formato, com ambos os lados pares."""
+        if self is AspectRatio.LANDSCAPE:
+            # Deitado: 1920 vira a largura, senao o arquivo fica gigante.
+            width, height = 1920, 1080
+        else:
+            height = base_height
+            width = int(round(height * self.ratio / 2) * 2)
+        return width, height
 
 
 @dataclass(slots=True)
@@ -172,6 +202,46 @@ class CropKeyframe:
 
 
 @dataclass(slots=True)
+class LayoutRegion:
+    """Uma faixa da composicao vertical.
+
+    Diz *de onde* recortar no video original e *quanto* da altura final aquela
+    faixa ocupa. E o que permite montar o layout classico de corte de gameplay:
+    o jogo numa faixa, a webcam na outra.
+
+    As coordenadas sao fracoes do frame de origem (0-1), nao pixels, para que a
+    mesma regiao valha em qualquer resolucao.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+    # Fracao da altura de saida ocupada por esta faixa. As fracoes somam 1.0.
+    weight: float = 0.5
+    label: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def pixels(self, source_width: int, source_height: int) -> tuple[int, int, int, int]:
+        """Converte para `(x, y, largura, altura)` em pixels pares e dentro do frame."""
+
+        def even(value: float) -> int:
+            return max(2, int(round(value / 2) * 2))
+
+        w = even(min(self.width, 1.0) * source_width)
+        h = even(min(self.height, 1.0) * source_height)
+        x = int(round(max(0.0, min(self.x, 1.0)) * source_width))
+        y = int(round(max(0.0, min(self.y, 1.0)) * source_height))
+
+        # Nao deixa a janela vazar pela borda direita/inferior.
+        x = min(x, max(0, source_width - w))
+        y = min(y, max(0, source_height - h))
+        return x, y, w, h
+
+
+@dataclass(slots=True)
 class ReframePlan:
     """Plano completo de reenquadramento de um corte."""
 
@@ -183,6 +253,8 @@ class ReframePlan:
     keyframes: list[CropKeyframe] = field(default_factory=list)
     # Para o modo split: a segunda janela (a de cima e `keyframes`).
     keyframes_secondary: list[CropKeyframe] = field(default_factory=list)
+    # Para o modo composite: as faixas empilhadas, de cima para baixo.
+    regions: list[LayoutRegion] = field(default_factory=list)
     faces_detected: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -194,6 +266,29 @@ class ReframePlan:
             "crop_height": self.crop_height,
             "keyframes": [k.to_dict() for k in self.keyframes],
             "keyframes_secondary": [k.to_dict() for k in self.keyframes_secondary],
+            "regions": [r.to_dict() for r in self.regions],
+            "faces_detected": self.faces_detected,
+        }
+
+
+@dataclass(slots=True)
+class LayoutSuggestion:
+    """O que a analise recomenda para um corte, antes de o usuario decidir."""
+
+    mode: str
+    aspect_ratio: str
+    reason: str
+    confidence: float
+    regions: list[LayoutRegion] = field(default_factory=list)
+    faces_detected: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "aspect_ratio": self.aspect_ratio,
+            "reason": self.reason,
+            "confidence": round(self.confidence, 3),
+            "regions": [r.to_dict() for r in self.regions],
             "faces_detected": self.faces_detected,
         }
 

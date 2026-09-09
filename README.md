@@ -140,7 +140,39 @@ python backend/cli.py serve        # API em :8000  (docs em /docs)
 cd frontend && npm run dev         # UI  em :5173
 ```
 
-A UI mostra o diagnóstico do ambiente, o progresso ao vivo (WebSocket), os trechos escolhidos assim que a análise termina e um player vertical por corte.
+#### Fluxo na interface
+
+O trabalho acontece em duas etapas, e elas são separadas de propósito:
+
+**1. Encontrar os momentos.** Cole o link e diga quantos trechos quer. A pipeline baixa, transcreve e seleciona — só isso. Nenhum arquivo de vídeo é gerado ainda, e o formulário não pergunta nada sobre legenda ou formato, porque essas decisões dependem do corte.
+
+**2. Configurar e gerar, corte a corte.** Clique num trecho da lista para abrir o editor. Ao abrir, ele analisa o trecho e **recomenda** um layout e um formato, explicando o porquê. A partir daí você ajusta:
+
+| Ajuste | O que faz |
+|--------|-----------|
+| **Trim** | início e fim, por slider ou passos de 1 segundo |
+| **Formatos** | 9:16, 4:5, 1:1, 16:9 — dá para marcar vários e gerar um arquivo de cada |
+| **Reposicionamento** | automático, seguir o falante, split-screen, centro fixo, posição manual ou **gameplay + webcam** |
+| **Legenda** | queimar a legenda animada ou não |
+
+A prévia mostra o vídeo original no trecho, com uma moldura por cima marcando o que sobra depois do crop. Nada é codificado até você clicar em gerar.
+
+##### Layout gameplay + webcam
+
+É o caso de quem grava stream: a tela do jogo ocupa quase tudo e a webcam fica num canto. Um crop vertical simples teria que escolher entre o jogo e você — o layout empilhado leva os dois, como nos cortes que você vê no TikTok.
+
+O editor detecta esse caso sozinho. Quando encontra um rosto pequeno encostado numa borda, recomenda o layout composto e já propõe as duas faixas:
+
+```
+Rosto pequeno junto da borda: parece webcam sobre captura de tela.
+O layout empilha o conteudo principal e a webcam.
+  faixa 'Conteudo': x=0.03 y=0.19 w=0.70 h=0.62 peso=0.62
+  faixa 'Webcam':   x=0.68 y=0.25 w=0.18 h=0.23 peso=0.38
+```
+
+Na prévia aparecem dois retângulos coloridos. Arraste para mover, use a alça do canto para redimensionar, e o slider *Divisão da tela* decide quanto da altura vai para cada faixa. A faixa 1 fica em cima no vídeo final.
+
+Cada região é gravada em frações do frame (0–1), não em pixels, então o mesmo enquadramento vale para qualquer formato de saída.
 
 ### API
 
@@ -152,6 +184,10 @@ A UI mostra o diagnóstico do ambiente, o progresso ao vivo (WebSocket), os trec
 | `GET` | `/api/jobs/{id}` | estado de um job |
 | `DELETE` | `/api/jobs/{id}` | cancela um job |
 | `WS` | `/ws/jobs/{id}` | progresso em tempo real |
+| `GET` | `/api/jobs/{id}/source` | vídeo de origem para a prévia (aceita `Range`) |
+| `GET` | `/api/jobs/{id}/suggest` | layout e formato recomendados para um trecho |
+| `POST` | `/api/jobs/{id}/render` | renderiza o corte, um arquivo por formato pedido |
+| `GET` | `/api/formats` | formatos e modos de enquadramento disponíveis |
 | `GET` | `/api/clips` | biblioteca de cortes renderizados |
 
 ---
@@ -178,6 +214,18 @@ REFRAME_MODE=auto                 # auto | single | split | center
 VIDEO_ENCODER=h264_nvenc
 NVENC_CQ=21                       # menor = mais qualidade e arquivo maior
 ```
+
+### Sobre o modelo do LLM
+
+Modelos de 8B (como o `llama3.1:8b`) identificam bem **onde** está o momento bom, mas erram ao **delimitar** o trecho: costumam devolver só a frase do gancho, uns 5 segundos, mesmo com o prompt exigindo 20 a 75. O `analyzer` corrige isso expandindo o corte a partir do ponto marcado, então nada é descartado por causa disso.
+
+Ainda assim, a *seleção* melhora bastante com um modelo maior. Se a VRAM permitir:
+
+```bash
+ollama pull qwen2.5:14b-instruct-q4_K_M   # ou llama3.1:70b, se couber
+```
+
+E ajuste `OLLAMA_MODEL` no `.env`. Alternativa sem custo de VRAM: `LLM_PROVIDER=gemini` com uma chave da API.
 
 ### Modo heurístico
 
@@ -226,6 +274,10 @@ clipforge/
 
 **Split-screen.** Quando os dois rostos estão bem separados na horizontal, cada um vai para metade da tela vertical — sai melhor que uma câmera pulando entre eles.
 
+**Layout composto.** As faixas são recortadas do mesmo frame com `split`, escaladas com `force_original_aspect_ratio=increase` seguido de um crop — assim cada faixa preenche seu espaço sem esticar a imagem — e unidas com `vstack`. A última faixa absorve a sobra do arredondamento, senão a soma das alturas não bate com a saída e o `vstack` recusa.
+
+**Prévia sem renderizar.** O editor não gera arquivo nenhum para mostrar o corte: ele toca o vídeo de origem em loop no trecho, com uma máscara CSS sobre a área descartada. O endpoint do vídeo responde a `Range`, então dar seek num arquivo de 15 GB baixa só os bytes daquele ponto. Ajustar o corte é instantâneo — é um `currentTime`, não um encode.
+
 **Legendas.** Timestamps por palavra do Whisper viram cartões de até 4 palavras. Cada palavra falada é destacada em cor e escala por tags inline do ASS, o que funciona em qualquer versão do libass.
 
 **Uma passada de FFmpeg.** Recorte temporal, crop animado, escala, legenda e encode acontecem num único comando. Um vídeo de 3 h nunca é reescrito por inteiro.
@@ -246,12 +298,19 @@ clipforge/
 | `ffprobe falhou em ...source.mp4.ytdl` | download interrompido no cache | resolvido: o cache agora ignora resíduo e o yt-dlp retoma. Para forçar do zero, apague a pasta em `output/cache/` |
 | `Sign in to confirm your age` | vídeo restrito | exporte os cookies do navegador e aponte `YTDLP_COOKIES` no `.env` |
 | `start.bat` fecha na hora | falta a `.venv` ou dependências | rode `scripts\setup.ps1`; a janela mostra o motivo antes de fechar |
+| `UnicodeEncodeError: charmap` | console Windows em cp1252 | resolvido: a CLI força UTF-8 nos streams no boot |
+| Cortes todos com a mesma duração | modelo pequeno devolve só o gancho | esperado — o corte é expandido a partir do ponto marcado. Um modelo maior seleciona melhor |
+| Enquadramento errado no corte | sem rosto em quadro (gameplay, slides) o modo automático cai no centro | abra o corte no editor: use **posição manual** ou **gameplay + webcam** |
+| Faixa da webcam pegou a área errada | a sugestão achou outro rosto (personagem do jogo, por exemplo) | arraste os retângulos na prévia; a sugestão é só um ponto de partida |
+| Botão *Editar* não aparece | o vídeo de origem saiu do cache | os cortes já renderizados continuam válidos; para reeditar, rode o job de novo |
 
 ---
 
 ## Licença
 
 MIT.
-#   c l i p - f o r g e - v 1  
- #   c l i p - f o r g e - v 1  
+#   c l i p - f o r g e - v 1 
+ 
+ #   c l i p - f o r g e - v 1 
+ 
  

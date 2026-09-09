@@ -1,6 +1,15 @@
 /** Cliente HTTP do backend. Caminhos relativos passam pelo proxy do Vite. */
 
-import type { Health, Job, JobRequest, RenderedClip } from "./types";
+import type {
+  FormatsResponse,
+  Health,
+  Job,
+  JobRequest,
+  LayoutSuggestion,
+  RenderedClip,
+  RenderRequest,
+  RenderResponse,
+} from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -35,6 +44,24 @@ export const api = {
 
   listClips: () =>
     request<{ clips: RenderedClip[] }>("/api/clips").then((data) => data.clips),
+
+  formats: () => request<FormatsResponse>("/api/formats"),
+
+  /** Renderiza um corte com os ajustes feitos no editor. */
+  renderClip: (jobId: string, payload: RenderRequest) =>
+    request<RenderResponse>(`/api/jobs/${jobId}/render`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Layout e formato recomendados para um trecho. */
+  suggestLayout: (jobId: string, start: number, end: number) =>
+    request<LayoutSuggestion>(
+      `/api/jobs/${jobId}/suggest?start=${start.toFixed(2)}&end=${end.toFixed(2)}`
+    ),
+
+  /** URL do vídeo de origem, usada para a prévia sem renderizar nada. */
+  sourceUrl: (jobId: string) => `/api/jobs/${jobId}/source`,
 
   /** Upload de arquivo local: multipart, sem o header JSON. */
   uploadVideo: async (file: File, minClips?: number): Promise<Job> => {

@@ -19,6 +19,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from app.config import settings
@@ -58,6 +59,10 @@ class Job:
     result: dict[str, Any] | None = None
     clips: list[dict[str, Any]] = field(default_factory=list)
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    # Preenchidos durante a execucao; sao o que permite renderizar um corte
+    # editado depois, sem repetir download nem transcricao.
+    media: dict[str, Any] | None = None
+    transcript_path: str | None = None
     events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=_MAX_EVENTS))
     cancel_requested: bool = False
 
@@ -77,6 +82,8 @@ class Job:
             "clips": self.clips,
             "candidates": self.candidates,
             "result": self.result,
+            "media": self.media,
+            "has_source": bool(self.media and Path(self.media.get("path", "")).exists()),
         }
 
 
@@ -144,10 +151,10 @@ class JobManager:
             job.status = JobStatus.CANCELLED
             job.message = "Cancelado antes de iniciar."
             job.finished_at = time.time()
-            self._publish(job, job.snapshot())
+            self._publish(job, {"type": "done", **job.snapshot()})
         else:
             job.message = "Cancelamento solicitado; encerrando apos a etapa atual."
-            self._publish(job, job.snapshot())
+            self._publish(job, {"type": "status", **job.snapshot()})
         return True
 
     # -------------------------------------------------------------- execucao
@@ -158,7 +165,7 @@ class JobManager:
 
         job.status = JobStatus.RUNNING
         job.started_at = time.time()
-        self._publish(job, job.snapshot())
+        self._publish(job, {"type": "status", **job.snapshot()})
 
         def on_event(event: dict[str, Any]) -> None:
             if job.cancel_requested:
@@ -173,6 +180,10 @@ class JobManager:
                 job.clips.append(event["clip"])
             if "candidates" in event:
                 job.candidates = event["candidates"]
+            if "media" in event:
+                job.media = event["media"]
+            if "transcript_path" in event:
+                job.transcript_path = event["transcript_path"]
             if "result" in event:
                 job.result = event["result"]
 
@@ -184,6 +195,8 @@ class JobManager:
             job.progress = 1.0
             job.result = result.to_dict()
             job.clips = [c.to_dict() for c in result.clips]
+            job.media = result.media.to_dict()
+            job.transcript_path = result.transcript_path
             job.message = f"{len(result.clips)} cortes gerados."
         except JobCancelled:
             job.status = JobStatus.CANCELLED

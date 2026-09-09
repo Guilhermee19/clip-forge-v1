@@ -69,16 +69,63 @@ def build_crop_expression(keyframes: list[CropKeyframe], *, fallback: float = 0.
 # ---------------------------------------------------------------------------
 
 
-def build_filter_complex(plan: ReframePlan, *, subtitle_file: str | None) -> str:
+def _composite_chain(
+    plan: ReframePlan, out_w: int, out_h: int, fps: int, scale_flags: str
+) -> str:
+    """Empilha as faixas do layout composto (ex.: gameplay em cima, webcam embaixo).
+
+    Cada faixa e recortada do frame original e escalada para a altura que lhe
+    cabe. A regiao que o usuario desenha tem proporcao arbitraria, entao usamos
+    `force_original_aspect_ratio=increase` seguido de um crop: a faixa preenche
+    o espaco inteiro e o excedente e aparado, em vez de a imagem esticar.
+    """
+    regions = plan.regions
+    count = len(regions)
+
+    # Alturas pares que somam exatamente `out_h` — a ultima faixa absorve a
+    # sobra do arredondamento, senao o vstack recusa a altura final.
+    heights: list[int] = []
+    for index, region in enumerate(regions):
+        if index == count - 1:
+            heights.append(out_h - sum(heights))
+        else:
+            heights.append(max(2, int(round(out_h * region.weight / 2) * 2)))
+
+    parts = [f"[0:v]split={count}" + "".join(f"[src{i}]" for i in range(count)) + ";"]
+
+    for index, (region, band_height) in enumerate(zip(regions, heights, strict=True)):
+        x, y, w, h = region.pixels(plan.source_width, plan.source_height)
+        parts.append(
+            f"[src{index}]crop={w}:{h}:{x}:{y},"
+            f"scale={out_w}:{band_height}:{scale_flags}:force_original_aspect_ratio=increase,"
+            f"crop={out_w}:{band_height},setsar=1[band{index}];"
+        )
+
+    parts.append("".join(f"[band{i}]" for i in range(count)))
+    parts.append(f"vstack=inputs={count}[stacked];")
+    parts.append(f"[stacked]fps={fps},format=yuv420p")
+
+    return "".join(parts)
+
+
+def build_filter_complex(
+    plan: ReframePlan,
+    *,
+    subtitle_file: str | None,
+    output_size: tuple[int, int] | None = None,
+) -> str:
     """Monta o `filter_complex` completo para um corte.
 
     O rotulo de saida e sempre `[v]`.
     """
-    out_w, out_h = settings.output_width, settings.output_height
+    out_w, out_h = output_size or (settings.output_width, settings.output_height)
     fps = settings.output_fps
     scale_flags = "flags=lanczos"
 
-    if plan.mode is ReframeMode.SPLIT:
+    if plan.mode is ReframeMode.COMPOSITE and plan.regions:
+        chain = _composite_chain(plan, out_w, out_h, fps, scale_flags)
+
+    elif plan.mode is ReframeMode.SPLIT:
         top = build_crop_expression(plan.keyframes)
         bottom = build_crop_expression(plan.keyframes_secondary)
         y = plan.keyframes[0].y if plan.keyframes else 0.0
@@ -124,6 +171,7 @@ def render_clip(
     output_path: str | Path | None = None,
     burn_subtitles: bool | None = None,
     make_thumbnail: bool = True,
+    output_size: tuple[int, int] | None = None,
     on_progress: ProgressFn | None = None,
 ) -> RenderedClip:
     """Renderiza um corte vertical completo.
@@ -136,12 +184,14 @@ def render_clip(
         output_path: destino; padrao e `output/clips/<indice>-<slug>.mp4`.
         burn_subtitles: sobrescreve a opcao do `.env`.
         make_thumbnail: se deve extrair um JPEG de capa.
+        output_size: `(largura, altura)` da saida. `None` usa a do `.env`.
         on_progress: callback `(fracao, mensagem)`.
 
     Returns:
         Um `RenderedClip` com os caminhos dos arquivos gerados.
     """
     burn = settings.burn_subtitles if burn_subtitles is None else burn_subtitles
+    out_w, out_h = output_size or (settings.output_width, settings.output_height)
     duration = candidate.duration
 
     if output_path is None:
@@ -161,15 +211,17 @@ def render_clip(
                 words,
                 work_dir / subtitle_file,
                 time_offset=candidate.start_time,
-                width=settings.output_width,
-                height=settings.output_height,
+                width=out_w,
+                height=out_h,
             )
             # Guarda uma copia ao lado do video, para reedicao manual depois.
             saved_subtitle = output_path.with_suffix(".ass")
             shutil.copy2(work_dir / subtitle_file, saved_subtitle)
 
         encoder = ffmpeg.pick_encoder()
-        filter_complex = build_filter_complex(plan, subtitle_file=subtitle_file)
+        filter_complex = build_filter_complex(
+            plan, subtitle_file=subtitle_file, output_size=(out_w, out_h)
+        )
 
         args = [
             # `-ss` antes de `-i` faz o seek pelo demuxer: em um video de 3 h a
@@ -191,9 +243,11 @@ def render_clip(
         ]
 
         logger.info(
-            "Renderizando '%s' (%.1fs, modo=%s, encoder=%s)",
+            "Renderizando '%s' (%.1fs, %dx%d, modo=%s, encoder=%s)",
             candidate.title,
             duration,
+            out_w,
+            out_h,
             plan.mode.value,
             encoder,
         )
@@ -226,8 +280,8 @@ def render_clip(
             video_path=str(output_path),
             subtitle_path=str(saved_subtitle) if saved_subtitle else None,
             thumbnail_path=str(thumbnail) if thumbnail else None,
-            width=settings.output_width,
-            height=settings.output_height,
+            width=out_w,
+            height=out_h,
             duration=duration,
             reframe_mode=plan.mode.value,
         )
