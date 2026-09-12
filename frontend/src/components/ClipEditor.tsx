@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Maximize2,
   Minimize2,
@@ -14,6 +14,7 @@ import { CameraTimeline } from "@/components/CameraTimeline";
 import { FramePicker } from "@/components/FramePicker";
 import { LivePreview } from "@/components/LivePreview";
 import { RegionPicker } from "@/components/RegionPicker";
+import { TemplateTab } from "@/components/TemplateTab";
 import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
 import { api } from "@/lib/api";
@@ -36,6 +37,7 @@ import type {
   LayoutSuggestion,
   MediaInfo,
   ReframeMode,
+  EditTemplate,
   RenderedClip,
   SubtitlePreset,
   SubtitleStyle,
@@ -51,9 +53,10 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "frame" | "trim" | "captions";
+type Tab = "template" | "frame" | "trim" | "captions";
 
 const TABS: [Tab, string][] = [
+  ["template", "Template"],
   ["frame", "Enquadramento"],
   ["trim", "Corte e formato"],
   ["captions", "Legendas"],
@@ -134,6 +137,14 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
   const [trimStep, setTrimStep] = useState(10);
+  const [templates, setTemplates] = useState<EditTemplate[]>([]);
+  const [appliedTemplate, setAppliedTemplate] = useState<string | null>(null);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+
+  // Quando um template padrão entra, a sugestão automática não pode desfazê-lo:
+  // a pessoa já disse como quer que os cortes saiam.
+  const templateWins = useRef(false);
 
   const duration = Math.max(0, end - start);
   const previewAspect = selected[0] ?? "9:16";
@@ -167,6 +178,8 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
     try {
       const result = await api.suggestLayout(projectId, start, end);
       setSuggestion(result);
+      if (templateWins.current) return;
+
       setReframe(result.mode);
       setSelected([result.aspect_ratio]);
       if (result.regions.length > 0) setRegions(result.regions);
@@ -314,6 +327,102 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
     // Leva o player para a borda que acabou de mudar: mexer no fim e continuar
     // vendo o começo não diz se o corte ficou bom.
     seekTo(deltaStart !== 0 ? nextStart : Math.max(nextStart, nextEnd - 2));
+  };
+
+  /**
+   * Aplica um acabamento salvo ao corte aberto.
+   *
+   * As faixas vêm em frações do frame, então o mesmo template serve para
+   * vídeos de resoluções diferentes — mas a proporção de cada faixa depende do
+   * formato de saída e da fonte, e por isso é recalculada aqui.
+   */
+  const applyTemplate = useCallback(
+    (template: EditTemplate) => {
+      const first = formats.find((f) => f.value === template.aspect_ratios[0]);
+      const ratio = first ? first.width / first.height : 9 / 16;
+
+      setReframe(template.reframe_mode);
+      setZoom(template.zoom);
+      setSelected(template.aspect_ratios);
+      setBurnSubtitles(template.burn_subtitles);
+      setStyle(template.subtitle_style);
+      if (template.regions.length > 0) {
+        setRegions(fitBands(template.regions, media.width, media.height, ratio));
+      }
+
+      setAppliedTemplate(template.id);
+      setTemplateError(null);
+    },
+    [formats, media.width, media.height],
+  );
+
+  // Carrega os templates e, se houver um padrão, já deixa o corte com a cara
+  // do canal antes de a pessoa mexer em qualquer coisa.
+  useEffect(() => {
+    api
+      .listTemplates()
+      .then((list) => {
+        setTemplates(list);
+        const fallback = list.find((t) => t.is_default);
+        if (fallback) {
+          templateWins.current = true;
+          applyTemplate(fallback);
+        }
+      })
+      .catch((exception: Error) => setTemplateError(exception.message));
+  }, [applyTemplate]);
+
+  /** O estado atual do editor, no formato que o template guarda. */
+  const currentTemplate = (name: string, isDefault: boolean) => ({
+    name,
+    is_default: isDefault,
+    reframe_mode: reframe,
+    zoom,
+    regions: composing ? regions : [],
+    aspect_ratios: selected,
+    burn_subtitles: burnSubtitles,
+    subtitle_style: style,
+  });
+
+  const runTemplateAction = async (action: () => Promise<unknown>) => {
+    setTemplateBusy(true);
+    setTemplateError(null);
+    try {
+      await action();
+      setTemplates(await api.listTemplates());
+    } catch (exception) {
+      setTemplateError((exception as Error).message);
+    } finally {
+      setTemplateBusy(false);
+    }
+  };
+
+  const saveTemplate = (name: string, isDefault: boolean) =>
+    runTemplateAction(async () => {
+      const created = await api.createTemplate(currentTemplate(name, isDefault));
+      setAppliedTemplate(created.id);
+    });
+
+  const overwriteTemplate = (template: EditTemplate) =>
+    runTemplateAction(async () => {
+      await api.updateTemplate(template.id, currentTemplate(template.name, template.is_default));
+      setAppliedTemplate(template.id);
+    });
+
+  const setDefaultTemplate = (template: EditTemplate) =>
+    runTemplateAction(() =>
+      api.updateTemplate(template.id, {
+        ...template,
+        is_default: !template.is_default,
+      }),
+    );
+
+  const removeTemplate = (template: EditTemplate) => {
+    if (!window.confirm(`Apagar o template "${template.name}"?`)) return;
+    return runTemplateAction(async () => {
+      await api.deleteTemplate(template.id);
+      setAppliedTemplate((current) => (current === template.id ? null : current));
+    });
   };
 
   const toggleFormat = (value: AspectRatio) => {
@@ -566,6 +675,20 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
 
           {/* --------------------------------------------- controles */}
           <aside className="scroll-thin flex min-h-0 min-w-0 flex-col gap-4 lg:overflow-y-auto">
+            {tab === "template" && (
+              <TemplateTab
+                templates={templates}
+                appliedId={appliedTemplate}
+                busy={templateBusy}
+                error={templateError}
+                onApply={applyTemplate}
+                onSave={saveTemplate}
+                onOverwrite={overwriteTemplate}
+                onSetDefault={setDefaultTemplate}
+                onDelete={removeTemplate}
+              />
+            )}
+
             {tab === "frame" && (
               <FrameTab
                 reframe={reframe}

@@ -3,6 +3,7 @@
 import type {
   FormatsResponse,
   Health,
+  EditTemplate,
   Job,
   JobRequest,
   LayoutSuggestion,
@@ -15,6 +16,7 @@ import type {
   RenderResponse,
   SetupTask,
   Storage,
+  TemplateSave,
   Word,
 } from "./types";
 
@@ -27,6 +29,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     // O FastAPI devolve `{ detail: ... }` nos erros; usamos isso na UI.
     const body = await response.json().catch(() => null);
+
+    // 404 com o texto padrão do FastAPI significa rota inexistente, não recurso
+    // ausente — quase sempre um backend rodando código mais antigo que esta
+    // página. "Not Found" sozinho não diz isso a ninguém.
+    if (response.status === 404 && body?.detail === "Not Found") {
+      throw new Error(
+        `O backend não conhece ${path}. Ele provavelmente está rodando uma versão antiga: ` +
+          "reinicie o 'python backend/cli.py serve'.",
+      );
+    }
+
     throw new Error(body?.detail ?? `${response.status} ${response.statusText}`);
   }
 
@@ -110,6 +123,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  // --------------------------------------------------------------- templates
+
+  /** Acabamentos salvos; o padrão vem primeiro. */
+  listTemplates: () => request<EditTemplate[]>("/api/templates"),
+
+  createTemplate: (payload: TemplateSave) =>
+    request<EditTemplate>("/api/templates", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateTemplate: (id: string, payload: TemplateSave) =>
+    request<EditTemplate>(`/api/templates/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteTemplate: (id: string) =>
+    request<{ deleted: string }>(`/api/templates/${id}`, { method: "DELETE" }),
 
   // ---------------------------------------------------------------- projetos
 

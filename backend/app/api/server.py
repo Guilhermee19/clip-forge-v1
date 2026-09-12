@@ -32,6 +32,7 @@ from app.api.schemas import (
     CleanupRequest,
     CleanupResponse,
     ClipListResponse,
+    EditTemplate,
     HealthResponse,
     JobCreateRequest,
     JobSummary,
@@ -46,6 +47,7 @@ from app.api.schemas import (
     RequirementStatus,
     SetupTask,
     StorageResponse,
+    TemplateSaveRequest,
     SuggestionResponse,
     WordsResponse,
 )
@@ -59,6 +61,7 @@ from app.core import (
     renderer,
     setup_doctor,
     storage,
+    templates,
     subtitles,
     transcriber,
 )
@@ -260,6 +263,41 @@ def cleanup_cache(payload: CleanupRequest) -> CleanupResponse:
             keep_in_use=payload.keep_in_use, drop_transcripts=payload.drop_transcripts
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Templates de edicao
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/templates", response_model=list[EditTemplate], tags=["edicao"])
+def list_templates() -> list[EditTemplate]:
+    """Acabamentos salvos: o padrao primeiro, depois do mais recente ao antigo."""
+    return [EditTemplate(**t.to_dict()) for t in templates.list_all()]
+
+
+@app.post("/api/templates", response_model=EditTemplate, status_code=201, tags=["edicao"])
+def create_template(payload: TemplateSaveRequest) -> EditTemplate:
+    """Salva o acabamento atual do editor como um template novo."""
+    saved = templates.save(payload.model_dump())
+    return EditTemplate(**saved.to_dict())
+
+
+@app.put("/api/templates/{template_id}", response_model=EditTemplate, tags=["edicao"])
+def update_template(template_id: str, payload: TemplateSaveRequest) -> EditTemplate:
+    """Sobrescreve um template existente."""
+    if templates.get(template_id) is None:
+        raise HTTPException(status_code=404, detail="Template nao encontrado.")
+    saved = templates.save(payload.model_dump(), template_id=template_id)
+    return EditTemplate(**saved.to_dict())
+
+
+@app.delete("/api/templates/{template_id}", tags=["edicao"])
+def delete_template(template_id: str) -> dict[str, str]:
+    """Remove um template."""
+    if not templates.delete(template_id):
+        raise HTTPException(status_code=404, detail="Template nao encontrado.")
+    return {"deleted": template_id}
 
 
 # ---------------------------------------------------------------------------

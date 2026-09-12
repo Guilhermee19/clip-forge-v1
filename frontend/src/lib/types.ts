@@ -336,3 +336,25 @@ export interface Storage {
   projects_bytes: number;
   cache_dir: string;
 }
+
+/** Um acabamento salvo: enquadramento, formatos e legenda. */
+export interface EditTemplate {
+  id: string;
+  name: string;
+  created_at: number;
+  updated_at: number;
+  /** Aplicado sozinho quando o editor abre. */
+  is_default: boolean;
+
+  reframe_mode: ReframeMode;
+  zoom: number;
+  regions: LayoutRegion[];
+
+  aspect_ratios: AspectRatio[];
+
+  burn_subtitles: boolean;
+  subtitle_style: SubtitleStyle;
+}
+
+/** O que o editor manda ao salvar um template. */
+export type TemplateSave = Omit<EditTemplate, "id" | "created_at" | "updated_at">;

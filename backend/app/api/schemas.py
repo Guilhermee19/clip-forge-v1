@@ -370,6 +370,42 @@ class RenderRequest(BaseModel):
     subtitle_style: SubtitleStyle | None = None
 
 
+class EditTemplate(BaseModel):
+    """Um acabamento salvo: enquadramento, formatos e legenda."""
+
+    id: str
+    name: str = Field(..., min_length=1, max_length=60)
+    created_at: float
+    updated_at: float
+    # Aplicado sozinho quando o editor abre.
+    is_default: bool = False
+
+    reframe_mode: ReframeModeLiteral = "auto"
+    zoom: float = Field(default=1.0, ge=1.0, le=4.0)
+    regions: list[LayoutRegionInput] = []
+
+    aspect_ratios: list[AspectRatioLiteral] = ["9:16"]
+
+    burn_subtitles: bool = True
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+
+
+class TemplateSaveRequest(BaseModel):
+    """Corpo de criacao/atualizacao de um template."""
+
+    name: str = Field(..., min_length=1, max_length=60)
+    is_default: bool = False
+
+    reframe_mode: ReframeModeLiteral = "auto"
+    zoom: float = Field(default=1.0, ge=1.0, le=4.0)
+    regions: list[LayoutRegionInput] = Field(default=[], max_length=4)
+
+    aspect_ratios: list[AspectRatioLiteral] = Field(default=["9:16"], min_length=1, max_length=4)
+
+    burn_subtitles: bool = True
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+
+
 class RenderResponse(BaseModel):
     """Cortes renderizados, um por formato pedido."""
 
