@@ -28,6 +28,9 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.api import jobs as jobs_module
 from app.api.schemas import (
+    CacheEntry,
+    CleanupRequest,
+    CleanupResponse,
     ClipListResponse,
     HealthResponse,
     JobCreateRequest,
@@ -42,6 +45,7 @@ from app.api.schemas import (
     RenderResponse,
     RequirementStatus,
     SetupTask,
+    StorageResponse,
     SuggestionResponse,
     WordsResponse,
 )
@@ -54,6 +58,7 @@ from app.core import (
     reframer,
     renderer,
     setup_doctor,
+    storage,
     subtitles,
     transcriber,
 )
@@ -221,6 +226,40 @@ def setup_task(task_id: str) -> SetupTask:
     if task is None:
         raise HTTPException(status_code=404, detail="Instalacao nao encontrada.")
     return SetupTask(**task.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Armazenamento
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/storage", response_model=StorageResponse, tags=["sistema"])
+def storage_inventory() -> StorageResponse:
+    """O que esta em cache, do item mais pesado para o mais leve."""
+    data = storage.inventory()
+    return StorageResponse(
+        **{**data, "entries": [CacheEntry(**entry) for entry in data["entries"]]}
+    )
+
+
+@app.delete("/api/storage/cache/{key}", response_model=CleanupResponse, tags=["sistema"])
+def delete_cache_entry(key: str, drop_transcript: bool = False) -> CleanupResponse:
+    """Apaga um item do cache. A transcricao so sai com `drop_transcript`."""
+    try:
+        result = storage.delete_entry(key, drop_transcript=drop_transcript)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Item de cache nao encontrado.") from None
+    return CleanupResponse(removed=[result["key"]], freed_bytes=result["freed_bytes"])
+
+
+@app.post("/api/storage/cleanup", response_model=CleanupResponse, tags=["sistema"])
+def cleanup_cache(payload: CleanupRequest) -> CleanupResponse:
+    """Limpa o cache em lote, preservando por padrao o que os projetos usam."""
+    return CleanupResponse(
+        **storage.cleanup(
+            keep_in_use=payload.keep_in_use, drop_transcripts=payload.drop_transcripts
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +579,14 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
             ),
         }
 
+    # O trecho de origem, quando a interface informa qual e. Sem ele o corte
+    # nasceria com nota zero e sem tags, mesmo a analise ja tendo calculado as
+    # duas coisas.
+    origin = next(
+        (c for c in project.candidates if c.get("id") == payload.candidate_id),
+        None,
+    )
+
     rendered: list[dict[str, Any]] = []
 
     for value in payload.aspect_ratios:
@@ -550,8 +597,13 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
             start_time=payload.start_time,
             end_time=payload.end_time,
             title=title,
-            virality_score=0.0,
-            final_score=0.0,
+            virality_score=(origin or {}).get("virality_score", 0.0),
+            final_score=(origin or {}).get("final_score", 0.0),
+            audio_score=(origin or {}).get("audio_score", 0.0),
+            summary=(origin or {}).get("summary", ""),
+            hook=(origin or {}).get("hook", ""),
+            reason=(origin or {}).get("reason", ""),
+            tags=list((origin or {}).get("tags", [])),
             transcript_text=transcript_text,
         )
 
@@ -596,6 +648,9 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
         entry = {
             **clip.to_dict(),
             "aspect_ratio": value,
+            # Guarda de qual trecho este arquivo saiu, para a lista marcar o
+            # que ja foi gerado.
+            "candidate_id": payload.candidate_id,
             "media_url": projects.media_url(project_id, clip.video_path),
             "thumbnail_url": (
                 projects.media_url(project_id, clip.thumbnail_path)

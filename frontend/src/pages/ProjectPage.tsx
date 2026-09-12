@@ -101,6 +101,17 @@ export function ProjectPage() {
   const canEdit = project.has_source && Boolean(project.media) && formats.length > 0;
   const analyzing = project.status === "analyzing";
 
+  // Trechos que já renderam algum arquivo — o mesmo casamento que a lista faz.
+  const done = new Set(
+    project.clips.map((clip) => {
+      const match =
+        project.candidates.find((c) => c.id === clip.candidate_id) ??
+        project.candidates.find((c) => Math.abs(c.start_time - clip.start_time) <= 2);
+      return match?.id;
+    }),
+  );
+  done.delete(undefined);
+
   return (
     <div className="flex flex-col gap-4">
       {renaming === null ? (
@@ -181,7 +192,7 @@ export function ProjectPage() {
             title="Trechos encontrados"
             hint={
               canEdit
-                ? "Clique em um trecho para ajustar e gerar o corte"
+                ? `${done.size} de ${project.candidates.length} já viraram corte`
                 : analyzing
                   ? "A análise ainda está rodando"
                   : "Sem o vídeo original, não dá para gerar novos cortes"
@@ -197,6 +208,7 @@ export function ProjectPage() {
             <div className="scroll-thin max-h-[70vh] overflow-y-auto pb-2">
               <CandidateList
                 candidates={project.candidates}
+                clips={project.clips}
                 editable={canEdit}
                 onEdit={canEdit ? setEditing : undefined}
               />

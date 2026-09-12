@@ -47,3 +47,11 @@ export function since(timestamp: number): string {
     month: "2-digit",
   });
 }
+
+/** Bytes -> `1,9 GB` / `240 MB` / `18 kB`. */
+export function bytes(value: number): string {
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1).replace(".", ",")} GB`;
+  if (value >= 1e6) return `${Math.round(value / 1e6)} MB`;
+  if (value >= 1e3) return `${Math.round(value / 1e3)} kB`;
+  return `${value} B`;
+}

@@ -4,13 +4,16 @@ import { ClipGrid } from "@/components/ClipGrid";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Chip } from "@/components/ui/Chip";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { api } from "@/lib/api";
+import type { RenderedClip } from "@/lib/types";
 import { useWorkspace } from "@/store/workspace";
 
 /** Todos os cortes renderizados, de todos os projetos, em um lugar só. */
 export function LibraryPage() {
-  const { library, projects } = useWorkspace();
+  const { library, projects, refreshLibrary, refreshProjects } = useWorkspace();
   const [project, setProject] = useState<string>("todos");
   const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   // Só os projetos que realmente têm corte viram filtro.
   const withClips = useMemo(
@@ -29,6 +32,26 @@ export function LibraryPage() {
       return byProject && byTerm;
     });
   }, [library, project, query]);
+
+  /**
+   * Apaga o arquivo de verdade, não só a entrada da lista — por isso o aviso
+   * antes. O corte pertence a um projeto, então as duas listagens recarregam.
+   */
+  const remove = async (clip: RenderedClip) => {
+    if (!clip.project_id) {
+      setError("Este corte não diz de qual projeto veio; abra o projeto para apagá-lo.");
+      return;
+    }
+    if (!window.confirm(`Apagar "${clip.title}"? O arquivo sai do disco.`)) return;
+
+    setError(null);
+    try {
+      await api.deleteClip(clip.project_id, clip.id);
+      await Promise.all([refreshLibrary(), refreshProjects()]);
+    } catch (exception) {
+      setError((exception as Error).message);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -84,8 +107,10 @@ export function LibraryPage() {
           }
         />
       ) : (
-        <ClipGrid clips={visible} showProject />
+        <ClipGrid clips={visible} showProject onDelete={remove} />
       )}
+
+      {error && <p className="px-1 text-[12px] text-rose">{error}</p>}
     </div>
   );
 }

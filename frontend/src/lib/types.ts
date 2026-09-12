@@ -35,6 +35,8 @@ export interface RenderedClip extends ClipCandidate {
   thumbnail_url?: string | null;
   /** Formato de saída, presente nos cortes gerados pelo editor. */
   aspect_ratio?: AspectRatio;
+  /** Trecho da análise que originou este corte. */
+  candidate_id?: string | null;
   source_title?: string;
   project_id?: string;
   project_title?: string;
@@ -121,6 +123,8 @@ export interface SubtitleStyle {
 
 /** Ajustes que o editor manda de volta para o backend renderizar. */
 export interface RenderRequest {
+  /** Trecho de origem: liga o arquivo gerado à linha da lista. */
+  candidate_id?: string | null;
   start_time: number;
   end_time: number;
   title?: string;
@@ -304,4 +308,31 @@ export interface OllamaModels {
   available: boolean;
   models: OllamaModelOption[];
   extras: OllamaModelExtra[];
+}
+
+/** Uma fonte em cache e o que ela ocupa no disco. */
+export interface CacheEntry {
+  key: string;
+  title: string;
+  source_url: string | null;
+  video_bytes: number;
+  audio_bytes: number;
+  transcript_bytes: number;
+  total_bytes: number;
+  has_video: boolean;
+  has_transcript: boolean;
+  modified_at: number;
+  /** Projeto que ainda depende deste cache para prévia e re-render. */
+  used_by: string | null;
+  used_by_title: string | null;
+}
+
+export interface Storage {
+  entries: CacheEntry[];
+  cache_bytes: number;
+  /** Quanto daria para liberar sem afetar nenhum projeto existente. */
+  reusable_bytes: number;
+  uploads_bytes: number;
+  projects_bytes: number;
+  cache_dir: string;
 }

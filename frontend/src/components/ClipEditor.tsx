@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pause, Play, Sparkles, Volume2, VolumeX, Wand2, X } from "lucide-react";
+import {
+  Maximize2,
+  Minimize2,
+  Pause,
+  Play,
+  Sparkles,
+  Volume2,
+  VolumeX,
+  Wand2,
+  X,
+} from "lucide-react";
 import { CameraTimeline } from "@/components/CameraTimeline";
 import { FramePicker } from "@/components/FramePicker";
 import { LivePreview } from "@/components/LivePreview";
@@ -82,6 +92,12 @@ const DEFAULT_STYLE: SubtitleStyle = {
 
 const PALETTE = ["#FFE500", "#2DD4BF", "#F472B6", "#FB923C", "#A78BFA", "#FFFFFF"];
 
+/** Saltos oferecidos para esticar ou encurtar o corte, em segundos. */
+const TRIM_STEPS = [5, 10, 20, 30];
+
+/** Um corte precisa sobrar alguma coisa: o encolhimento para aqui. */
+const MIN_DURATION = 1.5;
+
 /**
  * Editor de um corte: original de um lado, resultado ao vivo do outro.
  *
@@ -117,6 +133,7 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
   const [playhead, setPlayhead] = useState(candidate.start_time);
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
+  const [trimStep, setTrimStep] = useState(10);
 
   const duration = Math.max(0, end - start);
   const previewAspect = selected[0] ?? "9:16";
@@ -270,6 +287,35 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
     });
   };
 
+  /**
+   * Move as bordas do corte, cada uma pelo seu delta.
+   *
+   * Os dois limites saem juntos porque eles se empurram: esticar o início até
+   * o começo do vídeo não pode arrastar o fim, e encurtar demais não pode
+   * inverter o corte.
+   */
+  const nudgeRange = (deltaStart: number, deltaEnd: number) => {
+    // Encolher mais do que o corte tem não faz sentido. Sem isto, pedir −30s
+    // num corte de 4s empurrava a janela inteira 30s adiante no vídeo em vez de
+    // parar no mínimo; o pedido é aparado ao espaço que realmente sobra.
+    const shrink = Math.max(0, deltaStart) + Math.max(0, -deltaEnd);
+    const room = Math.max(0, duration - MIN_DURATION);
+    const scale = shrink > room ? room / shrink : 1;
+
+    const appliedStart = deltaStart > 0 ? deltaStart * scale : deltaStart;
+    const appliedEnd = deltaEnd < 0 ? deltaEnd * scale : deltaEnd;
+
+    const nextStart = clamp(start + appliedStart, 0, media.duration - MIN_DURATION);
+    const nextEnd = clamp(end + appliedEnd, nextStart + MIN_DURATION, media.duration);
+
+    setStart(Math.min(nextStart, nextEnd - MIN_DURATION));
+    setEnd(nextEnd);
+
+    // Leva o player para a borda que acabou de mudar: mexer no fim e continuar
+    // vendo o começo não diz se o corte ficou bom.
+    seekTo(deltaStart !== 0 ? nextStart : Math.max(nextStart, nextEnd - 2));
+  };
+
   const toggleFormat = (value: AspectRatio) => {
     setSelected((previous) => {
       if (!previous.includes(value)) return [...previous, value];
@@ -283,6 +329,7 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
     setError(null);
     try {
       const response = await api.renderClip(projectId, {
+        candidate_id: candidate.id,
         start_time: Number(start.toFixed(2)),
         end_time: Number(end.toFixed(2)),
         title,
@@ -552,7 +599,10 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
                   setStart(next);
                   seekTo(next);
                 }}
-                onEnd={(value) => setEnd(Math.max(value, start + 1))}
+                onEnd={(value) => setEnd(Math.max(value, start + MIN_DURATION))}
+                onNudge={nudgeRange}
+                step={trimStep}
+                onStep={setTrimStep}
                 formats={formats}
                 selected={selected}
                 onToggleFormat={toggleFormat}
@@ -770,6 +820,9 @@ function TrimTab({
   mediaDuration,
   onStart,
   onEnd,
+  onNudge,
+  step,
+  onStep,
   formats,
   selected,
   onToggleFormat,
@@ -781,6 +834,9 @@ function TrimTab({
   mediaDuration: number;
   onStart: (value: number) => void;
   onEnd: (value: number) => void;
+  onNudge: (deltaStart: number, deltaEnd: number) => void;
+  step: number;
+  onStep: (value: number) => void;
   formats: FormatOption[];
   selected: AspectRatio[];
   onToggleFormat: (value: AspectRatio) => void;
@@ -788,8 +844,33 @@ function TrimTab({
 }) {
   return (
     <>
-      <TimeControl label="Início" value={start} max={mediaDuration} onChange={onStart} />
-      <TimeControl label="Fim" value={end} max={mediaDuration} onChange={onEnd} />
+      <Field label="Passo dos ajustes">
+        <div className="flex flex-wrap gap-1.5">
+          {TRIM_STEPS.map((value) => (
+            <Chip key={value} active={step === value} onClick={() => onStep(value)}>
+              {value}s
+            </Chip>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Tamanho do corte">
+        <div className="grid grid-cols-2 gap-1.5">
+          {/* Abre nas duas pontas de uma vez: é o caso comum de ter perdido a
+              deixa no começo e o desfecho no fim. */}
+          <Button variant="outline" onClick={() => onNudge(-step, step)}>
+            <Maximize2 className="size-4 -rotate-45" strokeWidth={2} />
+            Aumentar {step}s
+          </Button>
+          <Button variant="outline" onClick={() => onNudge(step, -step)}>
+            <Minimize2 className="size-4 -rotate-45" strokeWidth={2} />
+            Diminuir {step}s
+          </Button>
+        </div>
+        <p className="mt-1.5 text-[11px] text-faint">
+          Mexe nas duas pontas juntas. Para uma só, use os botões de início e fim abaixo.
+        </p>
+      </Field>
 
       <p className="text-[12px] text-faint">
         Duração{" "}
@@ -797,6 +878,23 @@ function TrimTab({
           {duration.toFixed(1)}s
         </span>
       </p>
+
+      <TimeControl
+        label="Início"
+        value={start}
+        max={mediaDuration}
+        step={step}
+        onChange={onStart}
+        onNudge={(delta) => onNudge(delta, 0)}
+      />
+      <TimeControl
+        label="Fim"
+        value={end}
+        max={mediaDuration}
+        step={step}
+        onChange={onEnd}
+        onNudge={(delta) => onNudge(0, delta)}
+      />
 
       <Field label="Formatos a gerar">
         <div className="grid grid-cols-2 gap-1.5">
@@ -1097,12 +1195,17 @@ function TimeControl({
   label,
   value,
   max,
+  step,
   onChange,
+  onNudge,
 }: {
   label: string;
   value: number;
   max: number;
+  /** Quantos segundos cada botão move esta borda. */
+  step: number;
   onChange: (value: number) => void;
+  onNudge: (delta: number) => void;
 }) {
   return (
     <div>
@@ -1111,7 +1214,7 @@ function TimeControl({
         <span className="num text-[12px] text-ink">{clock(value)}</span>
       </div>
       <div className="flex items-center gap-2">
-        <Chip onClick={() => onChange(Math.max(0, value - 1))}>−1s</Chip>
+        <Chip onClick={() => onNudge(-step)}>−{step}s</Chip>
         <input
           type="range"
           min={0}
@@ -1122,7 +1225,7 @@ function TimeControl({
           className="flex-1 accent-(--c-accent)"
           aria-label={label}
         />
-        <Chip onClick={() => onChange(Math.min(max, value + 1))}>+1s</Chip>
+        <Chip onClick={() => onNudge(step)}>+{step}s</Chip>
       </div>
     </div>
   );

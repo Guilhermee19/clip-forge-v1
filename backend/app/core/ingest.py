@@ -201,10 +201,13 @@ def download(url: str, *, on_progress: ProgressFn | None = None) -> Path:
             f"Verifique o diretorio {cache_dir}."
         )
 
-    # Guarda o titulo original ao lado do video para a UI exibir depois.
+    # Guarda o titulo original ao lado do video para a UI exibir depois. A URL
+    # vai junto porque a chave do cache e um hash: sem ela, um item orfao (sem
+    # projeto) nao teria como ser reprocessado.
     title = (info or {}).get("title", "")
     if title:
         (cache_dir / "title.txt").write_text(title, encoding="utf-8")
+    (cache_dir / "source.url.txt").write_text(url, encoding="utf-8")
 
     return downloaded
 

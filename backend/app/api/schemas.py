@@ -118,6 +118,56 @@ class OllamaSelection(BaseModel):
     num_ctx: int
 
 
+class CacheEntry(BaseModel):
+    """Uma fonte em cache e o que ela ocupa no disco."""
+
+    key: str
+    title: str
+    source_url: str | None = None
+    video_bytes: int
+    audio_bytes: int
+    transcript_bytes: int
+    total_bytes: int
+    has_video: bool
+    has_transcript: bool
+    modified_at: float
+    # Projeto que ainda depende deste cache para previa e re-render.
+    used_by: str | None = None
+    used_by_title: str | None = None
+
+
+class StorageResponse(BaseModel):
+    """Inventario do que o ClipForge guarda em disco."""
+
+    entries: list[CacheEntry] = []
+    cache_bytes: int
+    # Quanto daria para liberar sem afetar nenhum projeto existente.
+    reusable_bytes: int
+    uploads_bytes: int
+    projects_bytes: int
+    cache_dir: str
+
+
+class CleanupRequest(BaseModel):
+    """Limpeza em lote do cache."""
+
+    keep_in_use: bool = Field(
+        default=True,
+        description="Preserva o cache dos projetos existentes (eles perdem a previa sem ele).",
+    )
+    drop_transcripts: bool = Field(
+        default=False,
+        description="Apaga tambem as transcricoes — o item mais caro de refazer.",
+    )
+
+
+class CleanupResponse(BaseModel):
+    """O que a limpeza tirou do disco."""
+
+    removed: list[str] = []
+    freed_bytes: int
+
+
 class RequirementStatus(BaseModel):
     """Um item do ambiente: como esta, como consertar na mao, o que o botao roda."""
 
@@ -266,6 +316,15 @@ class RenderRequest(BaseModel):
     reaproveitando a mesma analise de enquadramento.
     """
 
+    candidate_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Trecho da analise que originou este corte. Liga o arquivo gerado a "
+            "linha da lista, e traz de volta a pontuacao e as tags que a analise "
+            "ja tinha calculado."
+        ),
+    )
     start_time: float = Field(..., ge=0, description="Inicio do corte, em segundos.")
     end_time: float = Field(..., gt=0, description="Fim do corte, em segundos.")
     title: str | None = Field(default=None, max_length=120)

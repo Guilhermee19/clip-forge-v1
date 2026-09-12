@@ -14,6 +14,7 @@ import type {
   RenderRequest,
   RenderResponse,
   SetupTask,
+  Storage,
   Word,
 } from "./types";
 
@@ -46,6 +47,25 @@ export const api = {
 
   /** Estado e log de uma instalação (ou download) em andamento. */
   setupTask: (taskId: string) => request<SetupTask>(`/api/setup/tasks/${taskId}`),
+
+  // ------------------------------------------------------------ armazenamento
+
+  /** O que está em cache, do item mais pesado para o mais leve. */
+  storage: () => request<Storage>("/api/storage"),
+
+  /** Apaga um item do cache. A transcrição só sai se pedida. */
+  deleteCacheEntry: (key: string, dropTranscript = false) =>
+    request<{ removed: string[]; freed_bytes: number }>(
+      `/api/storage/cache/${encodeURIComponent(key)}?drop_transcript=${dropTranscript}`,
+      { method: "DELETE" },
+    ),
+
+  /** Limpeza em lote; por padrão preserva o cache dos projetos existentes. */
+  cleanupCache: (options: { keep_in_use: boolean; drop_transcripts: boolean }) =>
+    request<{ removed: string[]; freed_bytes: number }>("/api/storage/cleanup", {
+      method: "POST",
+      body: JSON.stringify(options),
+    }),
 
   /** Modelos recomendados para escolher os cortes, com o estado de cada um. */
   ollamaModels: () => request<OllamaModels>("/api/setup/models"),

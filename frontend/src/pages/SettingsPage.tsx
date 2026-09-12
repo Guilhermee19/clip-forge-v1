@@ -1,6 +1,7 @@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { ModelPicker } from "@/components/ModelPicker";
 import { SetupChecklist } from "@/components/SetupChecklist";
+import { StoragePanel } from "@/components/StoragePanel";
 import { Chip } from "@/components/ui/Chip";
 import { Panel, PanelHeader } from "@/components/ui/Panel";
 import { useWorkspace } from "@/store/workspace";
@@ -23,6 +24,8 @@ export function SettingsPage() {
       <SetupChecklist />
 
       <ModelPicker />
+
+      <StoragePanel />
 
       <div className="grid items-start gap-4 lg:grid-cols-3">
         <Panel>
