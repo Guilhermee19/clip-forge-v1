@@ -33,8 +33,20 @@ export interface RenderedClip extends ClipCandidate {
   /** Preenchido pelo endpoint /api/clips, para o player. */
   media_url?: string;
   thumbnail_url?: string | null;
+  /** Formato de saída, presente nos cortes gerados pelo editor. */
+  aspect_ratio?: AspectRatio;
   source_title?: string;
+  project_id?: string;
+  project_title?: string;
   created_at?: number;
+}
+
+/** Uma palavra transcrita com timestamps próprios. */
+export interface Word {
+  text: string;
+  start: number;
+  end: number;
+  probability: number;
 }
 
 export type AspectRatio = "9:16" | "4:5" | "1:1" | "16:9";
@@ -78,6 +90,16 @@ export interface MediaInfo {
   source_url: string | null;
 }
 
+/** Estilo da legenda, ajustável por corte. Cores em `#RRGGBB`. */
+export interface SubtitleStyle {
+  font_size: number;
+  /** Distância até a base do vídeo, em pixels da saída (altura 1920). */
+  margin_v: number;
+  primary_color: string;
+  highlight_color: string;
+  max_words: number;
+}
+
 /** Ajustes que o editor manda de volta para o backend renderizar. */
 export interface RenderRequest {
   start_time: number;
@@ -91,6 +113,7 @@ export interface RenderRequest {
   /** Faixas empilhadas, de cima para baixo. Exigido no modo composite. */
   regions?: LayoutRegion[] | null;
   burn_subtitles: boolean;
+  subtitle_style?: SubtitleStyle;
 }
 
 export interface RenderResponse {
@@ -109,6 +132,30 @@ export interface FormatsResponse {
   reframe_modes: { value: ReframeMode; label: string }[];
 }
 
+/** Um vídeo de origem e tudo que saiu dele. */
+export interface ProjectSummary {
+  id: string;
+  title: string;
+  source: string;
+  source_url: string | null;
+  status: "new" | "analyzing" | "ready" | "failed";
+  created_at: number;
+  updated_at: number;
+  clip_count: number;
+  candidate_count: number;
+  has_source: boolean;
+  duration: number;
+  thumbnail_url: string | null;
+  last_error: string | null;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  media: MediaInfo | null;
+  candidates: ClipCandidate[];
+  clips: RenderedClip[];
+  transcript_path: string | null;
+}
+
 export interface Job {
   id: string;
   source: string;
@@ -124,6 +171,8 @@ export interface Job {
   candidates: ClipCandidate[];
   result: unknown | null;
   media: MediaInfo | null;
+  /** Projeto alimentado por este job; a UI abre ele quando a análise termina. */
+  project_id: string | null;
   /** O vídeo de origem ainda está no disco: dá para pré-visualizar e reeditar. */
   has_source: boolean;
 }
@@ -168,4 +217,5 @@ export interface ProgressEvent {
   media?: MediaInfo | null;
   has_source?: boolean;
   transcript_path?: string;
+  project_id?: string;
 }

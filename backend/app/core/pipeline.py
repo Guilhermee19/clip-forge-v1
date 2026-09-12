@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.core import analyzer, audio_energy, ingest, reframer, renderer, transcriber
+from app.core import analyzer, audio_energy, ingest, projects, reframer, renderer, transcriber
 from app.models import ClipCandidate, MediaInfo, RenderedClip, Transcript
 from app.utils.logging import get_logger
 
@@ -59,6 +59,8 @@ class PipelineOptions:
     use_cache: bool = True
     # Analisa e escolhe os cortes, mas nao renderiza (util para revisar antes).
     dry_run: bool = False
+    # Projeto ao qual esta execucao pertence. `None` resolve pela fonte.
+    project_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -141,6 +143,10 @@ def run(
     reporter = ProgressReporter(on_event)
     started = time.time()
 
+    project = projects.get_or_create(source)
+    projects.update(project.id, status="analyzing", last_error=None)
+    reporter.emit(0.0, f"Projeto {project.id}", project_id=project.id)
+
     # ------------------------------------------------------------ 1. ingestao
     reporter.start_stage("ingest")
     media = ingest.ingest(source, on_progress=reporter.callback())
@@ -149,6 +155,13 @@ def run(
         1.0,
         f"'{media.title}' ({media.duration / 60:.1f} min, {media.width}x{media.height})",
         media=media.to_dict(),
+        project_id=project.id,
+    )
+    projects.update(
+        project.id,
+        title=media.title,
+        media=media.to_dict(),
+        source_url=media.source_url,
     )
     reporter.finish_stage("ingest")
 
@@ -168,6 +181,7 @@ def run(
         )
         transcriber.save_transcript(transcript, transcript_path)
     reporter.emit(1.0, "Transcricao pronta.", transcript_path=str(transcript_path))
+    projects.update(project.id, transcript_path=str(transcript_path))
     reporter.finish_stage("transcribe")
 
     # ------------------------------------------------------- 3. energia audio
@@ -195,6 +209,11 @@ def run(
         1.0,
         f"{len(candidates)} cortes selecionados.",
         candidates=[c.to_dict() for c in candidates],
+    )
+    projects.update(
+        project.id,
+        candidates=[c.to_dict() for c in candidates],
+        status="ready",
     )
     reporter.finish_stage("analyze")
 

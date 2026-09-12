@@ -63,6 +63,8 @@ class Job:
     # editado depois, sem repetir download nem transcricao.
     media: dict[str, Any] | None = None
     transcript_path: str | None = None
+    # Projeto que esta execucao alimenta; a UI navega para ele ao terminar.
+    project_id: str | None = None
     events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=_MAX_EVENTS))
     cancel_requested: bool = False
 
@@ -83,6 +85,7 @@ class Job:
             "candidates": self.candidates,
             "result": self.result,
             "media": self.media,
+            "project_id": self.project_id,
             "has_source": bool(self.media and Path(self.media.get("path", "")).exists()),
         }
 
@@ -180,6 +183,8 @@ class JobManager:
                 job.clips.append(event["clip"])
             if "candidates" in event:
                 job.candidates = event["candidates"]
+            if "project_id" in event:
+                job.project_id = event["project_id"]
             if "media" in event:
                 job.media = event["media"]
             if "transcript_path" in event:

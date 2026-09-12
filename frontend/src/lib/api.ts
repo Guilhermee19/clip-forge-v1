@@ -6,9 +6,12 @@ import type {
   Job,
   JobRequest,
   LayoutSuggestion,
+  ProjectDetail,
+  ProjectSummary,
   RenderedClip,
   RenderRequest,
   RenderResponse,
+  Word,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -48,20 +51,46 @@ export const api = {
   formats: () => request<FormatsResponse>("/api/formats"),
 
   /** Renderiza um corte com os ajustes feitos no editor. */
-  renderClip: (jobId: string, payload: RenderRequest) =>
-    request<RenderResponse>(`/api/jobs/${jobId}/render`, {
+  renderClip: (projectId: string, payload: RenderRequest) =>
+    request<RenderResponse>(`/api/projects/${projectId}/render`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
 
+  // ---------------------------------------------------------------- projetos
+
+  listProjects: () => request<ProjectSummary[]>("/api/projects"),
+
+  getProject: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
+
+  renameProject: (id: string, title: string) =>
+    request<ProjectDetail>(`/api/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
+  deleteProject: (id: string) =>
+    request<{ deleted: string }>(`/api/projects/${id}`, { method: "DELETE" }),
+
+  deleteClip: (projectId: string, clipId: string) =>
+    request<{ deleted: string }>(`/api/projects/${projectId}/clips/${clipId}`, {
+      method: "DELETE",
+    }),
+
   /** Layout e formato recomendados para um trecho. */
-  suggestLayout: (jobId: string, start: number, end: number) =>
+  suggestLayout: (projectId: string, start: number, end: number) =>
     request<LayoutSuggestion>(
-      `/api/jobs/${jobId}/suggest?start=${start.toFixed(2)}&end=${end.toFixed(2)}`
+      `/api/projects/${projectId}/suggest?start=${start.toFixed(2)}&end=${end.toFixed(2)}`
     ),
 
+  /** Palavras do trecho, para a prévia desenhar a legenda ao vivo. */
+  words: (projectId: string, start: number, end: number) =>
+    request<{ words: Word[] }>(
+      `/api/projects/${projectId}/words?start=${start.toFixed(2)}&end=${end.toFixed(2)}`
+    ).then((data) => data.words),
+
   /** URL do vídeo de origem, usada para a prévia sem renderizar nada. */
-  sourceUrl: (jobId: string) => `/api/jobs/${jobId}/source`,
+  sourceUrl: (projectId: string) => `/api/projects/${projectId}/source`,
 
   /** Upload de arquivo local: multipart, sem o header JSON. */
   uploadVideo: async (file: File, minClips?: number): Promise<Job> => {

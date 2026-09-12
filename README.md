@@ -146,16 +146,30 @@ O trabalho acontece em duas etapas, e elas são separadas de propósito:
 
 **1. Encontrar os momentos.** Cole o link e diga quantos trechos quer. A pipeline baixa, transcreve e seleciona — só isso. Nenhum arquivo de vídeo é gerado ainda, e o formulário não pergunta nada sobre legenda ou formato, porque essas decisões dependem do corte.
 
-**2. Configurar e gerar, corte a corte.** Clique num trecho da lista para abrir o editor. Ao abrir, ele analisa o trecho e **recomenda** um layout e um formato, explicando o porquê. A partir daí você ajusta:
+**2. Configurar e gerar, corte a corte.** Clique num trecho para abrir o editor. Ele mostra o **original à esquerda** e o **resultado ao vivo à direita** — um canvas que redesenha a composição a cada frame com a mesma matemática de recorte do FFmpeg, legenda incluída. O que aparece ali é o que sai no arquivo.
+
+Ao abrir, o editor analisa o trecho e **recomenda** layout e formato, explicando o porquê. Duas abas separam as decisões:
+
+**Aba "Layout e formato"**
 
 | Ajuste | O que faz |
 |--------|-----------|
 | **Trim** | início e fim, por slider ou passos de 1 segundo |
-| **Formatos** | 9:16, 4:5, 1:1, 16:9 — dá para marcar vários e gerar um arquivo de cada |
-| **Reposicionamento** | automático, seguir o falante, split-screen, centro fixo, posição manual ou **gameplay + webcam** |
-| **Legenda** | queimar a legenda animada ou não |
+| **Formatos** | 9:16, 4:5, 1:1, 16:9 — marque vários e sai um arquivo de cada; o recomendado leva ★ |
+| **1 painel / 2 painéis** | atalho entre recorte simples e layout empilhado |
+| **Reposicionamento** | automático, seguir o falante, split-screen, centro fixo, posição manual ou gameplay + webcam |
 
-A prévia mostra o vídeo original no trecho, com uma moldura por cima marcando o que sobra depois do crop. Nada é codificado até você clicar em gerar.
+**Aba "Legendas"**
+
+| Ajuste | O que faz |
+|--------|-----------|
+| **Ligar/desligar** | queima a legenda no vídeo ou não |
+| **Tamanho da fonte** | 40 a 140 px |
+| **Altura na tela** | distância até a base, 80 a 1200 px |
+| **Palavras por vez** | 1 a 8 por cartão |
+| **Cores** | do texto e do destaque da palavra falada |
+
+Toda mudança aparece na prévia na hora. A barra de transporte embaixo controla play/pause e a posição dentro do trecho. Nada é codificado até clicar em gerar.
 
 ##### Layout gameplay + webcam
 
@@ -186,6 +200,7 @@ Cada região é gravada em frações do frame (0–1), não em pixels, então o 
 | `WS` | `/ws/jobs/{id}` | progresso em tempo real |
 | `GET` | `/api/jobs/{id}/source` | vídeo de origem para a prévia (aceita `Range`) |
 | `GET` | `/api/jobs/{id}/suggest` | layout e formato recomendados para um trecho |
+| `GET` | `/api/jobs/{id}/words` | palavras do trecho, para a prévia desenhar a legenda |
 | `POST` | `/api/jobs/{id}/render` | renderiza o corte, um arquivo por formato pedido |
 | `GET` | `/api/formats` | formatos e modos de enquadramento disponíveis |
 | `GET` | `/api/clips` | biblioteca de cortes renderizados |
@@ -275,6 +290,8 @@ clipforge/
 **Split-screen.** Quando os dois rostos estão bem separados na horizontal, cada um vai para metade da tela vertical — sai melhor que uma câmera pulando entre eles.
 
 **Layout composto.** As faixas são recortadas do mesmo frame com `split`, escaladas com `force_original_aspect_ratio=increase` seguido de um crop — assim cada faixa preenche seu espaço sem esticar a imagem — e unidas com `vstack`. A última faixa absorve a sobra do arredondamento, senão a soma das alturas não bate com a saída e o `vstack` recusa.
+
+**Prévia fiel, não aproximada.** O canvas do editor usa `drawImage` com coordenadas de origem, que é o equivalente exato de `crop` + `scale` no FFmpeg. A legenda é desenhada a partir das mesmas palavras e do mesmo agrupamento que vão para o `.ass`, na mesma família tipográfica. Por isso a prévia bate com o arquivo em vez de sugerir como ele ficaria.
 
 **Prévia sem renderizar.** O editor não gera arquivo nenhum para mostrar o corte: ele toca o vídeo de origem em loop no trecho, com uma máscara CSS sobre a área descartada. O endpoint do vídeo responde a `Range`, então dar seek num arquivo de 15 GB baixa só os bytes daquele ponto. Ajustar o corte é instantâneo — é um `currentTime`, não um encode.
 

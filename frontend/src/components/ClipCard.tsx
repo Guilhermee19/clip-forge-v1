@@ -18,7 +18,8 @@ export function ClipCard({ clip, index }: Props) {
     <article className="card flex flex-col gap-3 p-4">
       <div className="relative overflow-hidden rounded-lg bg-ink-950">
         <video
-          className="mx-auto aspect-[9/16] max-h-[420px] w-full object-contain"
+          className="mx-auto max-h-[420px] w-full object-contain"
+          style={{ aspectRatio: (clip.aspect_ratio ?? "9:16").replace(":", " / ") }}
           src={mediaUrl}
           poster={clip.thumbnail_url ?? undefined}
           controls
@@ -30,6 +31,11 @@ export function ClipCard({ clip, index }: Props) {
         <span className="absolute right-2 top-2 rounded bg-ink-950/80 px-2 py-0.5 text-xs font-mono text-slate-300">
           {clock(clip.duration)}
         </span>
+        {clip.aspect_ratio && (
+          <span className="absolute bottom-2 right-2 rounded bg-ink-950/80 px-2 py-0.5 font-mono text-xs text-brand-400">
+            {clip.aspect_ratio}
+          </span>
+        )}
       </div>
 
       <div className="space-y-1">

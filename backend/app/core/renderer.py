@@ -172,6 +172,7 @@ def render_clip(
     burn_subtitles: bool | None = None,
     make_thumbnail: bool = True,
     output_size: tuple[int, int] | None = None,
+    subtitle_style: dict | None = None,
     on_progress: ProgressFn | None = None,
 ) -> RenderedClip:
     """Renderiza um corte vertical completo.
@@ -185,6 +186,7 @@ def render_clip(
         burn_subtitles: sobrescreve a opcao do `.env`.
         make_thumbnail: se deve extrair um JPEG de capa.
         output_size: `(largura, altura)` da saida. `None` usa a do `.env`.
+        subtitle_style: ajustes da legenda vindos da UI (tamanho, margem, cores).
         on_progress: callback `(fracao, mensagem)`.
 
     Returns:
@@ -213,6 +215,7 @@ def render_clip(
                 time_offset=candidate.start_time,
                 width=out_w,
                 height=out_h,
+                **(subtitle_style or {}),
             )
             # Guarda uma copia ao lado do video, para reedicao manual depois.
             saved_subtitle = output_path.with_suffix(".ass")

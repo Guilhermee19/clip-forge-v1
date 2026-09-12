@@ -82,7 +82,10 @@ export function RegionPicker({ regions, onChange, active, onSelect }: Props) {
   return (
     <div
       ref={container}
-      className="absolute inset-0"
+      // `pointer-events-none` no container deixa os controles nativos do player
+      // clicaveis; so os retangulos (abaixo) reativam o ponteiro. Durante o
+      // arraste o `setPointerCapture` garante que os eventos continuem vindo.
+      className="pointer-events-none absolute inset-0"
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
@@ -94,7 +97,7 @@ export function RegionPicker({ regions, onChange, active, onSelect }: Props) {
             key={index}
             className={`absolute border-2 ${COLORS[index % COLORS.length]} ${
               focused ? FILLS[index % FILLS.length] : "opacity-50"
-            } cursor-move transition-opacity`}
+            } pointer-events-auto cursor-move transition-opacity`}
             style={{
               left: `${region.x * 100}%`,
               top: `${region.y * 100}%`,

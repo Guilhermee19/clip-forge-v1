@@ -44,6 +44,8 @@ class JobSummary(BaseModel):
     candidates: list[dict[str, Any]] = []
     result: dict[str, Any] | None = None
     media: dict[str, Any] | None = None
+    # Projeto alimentado por este job; a UI abre ele quando a analise termina.
+    project_id: str | None = None
     # True quando o video de origem ainda esta no disco, ou seja, a previa e a
     # re-renderizacao de cortes editados estao disponiveis.
     has_source: bool = False
@@ -65,6 +67,50 @@ class HealthResponse(BaseModel):
     output_dir: str
 
 
+class ProjectSummary(BaseModel):
+    """Um projeto na listagem: o suficiente para o card, sem o peso do resto."""
+
+    id: str
+    title: str
+    source: str
+    source_url: str | None = None
+    status: str
+    created_at: float
+    updated_at: float
+    clip_count: int
+    candidate_count: int
+    has_source: bool
+    duration: float = 0.0
+    thumbnail_url: str | None = None
+    last_error: str | None = None
+
+
+class ProjectDetail(BaseModel):
+    """Projeto completo: trechos analisados e cortes gerados."""
+
+    id: str
+    title: str
+    source: str
+    source_url: str | None = None
+    status: str
+    created_at: float
+    updated_at: float
+    media: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] = []
+    clips: list[dict[str, Any]] = []
+    has_source: bool = False
+    clip_count: int = 0
+    candidate_count: int = 0
+    transcript_path: str | None = None
+    last_error: str | None = None
+
+
+class ProjectRenameRequest(BaseModel):
+    """Renomear um projeto pela interface."""
+
+    title: str = Field(..., min_length=1, max_length=120)
+
+
 class ClipListResponse(BaseModel):
     """Cortes ja renderizados que existem no disco."""
 
@@ -84,6 +130,18 @@ class LayoutRegionInput(BaseModel):
     height: float = Field(..., gt=0.0, le=1.0)
     weight: float = Field(default=0.5, gt=0.0, le=1.0)
     label: str = ""
+
+
+class SubtitleStyle(BaseModel):
+    """Ajustes de legenda escolhidos por corte na interface."""
+
+    font_size: int = Field(default=84, ge=24, le=200)
+    # Distancia da legenda ate a base do video, em pixels da saida.
+    margin_v: int = Field(default=420, ge=0, le=1600)
+    # Cores em `#RRGGBB`; o backend converte para o BGR que o ASS espera.
+    primary_color: str = "#FFFFFF"
+    highlight_color: str = "#FFE500"
+    max_words: int = Field(default=4, ge=1, le=10)
 
 
 class RenderRequest(BaseModel):
@@ -118,12 +176,19 @@ class RenderRequest(BaseModel):
         description="Faixas empilhadas, de cima para baixo. Exigido no modo 'composite'.",
     )
     burn_subtitles: bool = True
+    subtitle_style: SubtitleStyle | None = None
 
 
 class RenderResponse(BaseModel):
     """Cortes renderizados, um por formato pedido."""
 
     clips: list[dict[str, Any]]
+
+
+class WordsResponse(BaseModel):
+    """Palavras do trecho, para a previa desenhar a legenda ao vivo."""
+
+    words: list[dict[str, Any]]
 
 
 class SuggestionResponse(BaseModel):

@@ -95,6 +95,22 @@ def group_words(
     return groups
 
 
+def hex_to_ass(color: str, fallback: str) -> str:
+    """Converte `#RRGGBB` (o que a UI manda) para `&H00BBGGRR` (o que o ASS usa).
+
+    O ASS guarda a cor em BGR, ao contrario do CSS. Trocar a ordem e o passo
+    que quase sempre passa despercebido e faz o amarelo virar azul.
+    """
+    value = (color or "").strip().lstrip("#")
+    if len(value) != 6:
+        return fallback
+    try:
+        red, green, blue = (int(value[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return fallback
+    return f"&H00{blue:02X}{green:02X}{red:02X}"
+
+
 def build_ass(
     words: list[Word],
     *,
@@ -102,6 +118,11 @@ def build_ass(
     width: int | None = None,
     height: int | None = None,
     max_words: int | None = None,
+    font_size: int | None = None,
+    margin_v: int | None = None,
+    primary_color: str | None = None,
+    highlight_color: str | None = None,
+    font: str | None = None,
 ) -> str:
     """Monta o conteudo de um arquivo `.ass` com destaque palavra-a-palavra.
 
@@ -111,29 +132,38 @@ def build_ass(
             legenda comece em zero no clipe recortado.
         width / height: resolucao de saida (padrao: a do `.env`).
         max_words: palavras por cartao (padrao: a do `.env`).
+        font_size: corpo da fonte em pixels da resolucao de saida.
+        margin_v: distancia da legenda ate a base, em pixels.
+        primary_color / highlight_color: cores no formato ASS (`&H00BBGGRR`).
+        font: nome da familia tipografica instalada no sistema.
 
     Returns:
         O texto completo do arquivo ASS.
     """
     width = width or settings.output_width
     height = height or settings.output_height
+    font_size = font_size or settings.subtitle_font_size
+    margin_v = settings.subtitle_margin_v if margin_v is None else margin_v
+    primary_color = primary_color or settings.subtitle_primary_color
+    highlight_color = highlight_color or settings.subtitle_highlight_color
+    font = font or settings.subtitle_font
 
     lines = [
         _HEADER.format(
             width=width,
             height=height,
-            font=settings.subtitle_font,
-            size=settings.subtitle_font_size,
-            primary=settings.subtitle_primary_color,
+            font=font,
+            size=font_size,
+            primary=primary_color,
             outline=settings.subtitle_outline_color,
-            border=max(3, settings.subtitle_font_size // 16),
+            border=max(3, font_size // 16),
             shadow=2,
             margin_h=int(width * 0.08),
-            margin_v=settings.subtitle_margin_v,
+            margin_v=margin_v,
         )
     ]
 
-    highlight = settings.subtitle_highlight_color
+    highlight = highlight_color
 
     for group in group_words(words, max_words=max_words):
         if not group:
@@ -157,9 +187,9 @@ def build_ass(
                 if index == position:
                     # Palavra atual: cor de destaque + um "pop" de escala.
                     rendered.append(
-                        rf"{{\c{highlight}\fscx112\fscy112\bord{max(4, settings.subtitle_font_size // 14)}}}"
+                        rf"{{\c{highlight}\fscx112\fscy112\bord{max(4, font_size // 14)}}}"
                         rf"{text}"
-                        rf"{{\c{settings.subtitle_primary_color}\fscx100\fscy100\bord{max(3, settings.subtitle_font_size // 16)}}}"
+                        rf"{{\c{primary_color}\fscx100\fscy100\bord{max(3, font_size // 16)}}}"
                     )
                 else:
                     rendered.append(text)

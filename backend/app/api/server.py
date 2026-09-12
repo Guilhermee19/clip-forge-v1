@@ -32,12 +32,16 @@ from app.api.schemas import (
     HealthResponse,
     JobCreateRequest,
     JobSummary,
+    ProjectDetail,
+    ProjectRenameRequest,
+    ProjectSummary,
     RenderRequest,
     RenderResponse,
     SuggestionResponse,
+    WordsResponse,
 )
 from app.config import settings
-from app.core import analyzer, ingest, reframer, renderer, transcriber
+from app.core import analyzer, ingest, projects, reframer, renderer, subtitles, transcriber
 from app.core.pipeline import PipelineOptions
 from app.models import AspectRatio, ClipCandidate, LayoutRegion
 from app.utils import ffmpeg
@@ -63,6 +67,12 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     manager.bind_loop(asyncio.get_running_loop())
 
+    # Converte o formato antigo (pasta unica de cortes) em projetos. Roda uma
+    # vez: depois o manifesto fica marcado como migrado.
+    migrated = projects.migrate_legacy()
+    if migrated:
+        logger.info("%d projeto(s) importados do formato antigo.", migrated)
+
     logger.info("ClipForge %s pronto em http://%s:%s", __version__, settings.api_host, settings.api_port)
     yield
 
@@ -84,8 +94,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve os videos renderizados para o player da UI.
-app.mount("/media", StaticFiles(directory=str(settings.clips_dir)), name="media")
+# Serve os cortes de todos os projetos: /media/<projeto>/clips/<arquivo>.
+app.mount("/media", StaticFiles(directory=str(projects.projects_dir())), name="media")
 
 
 # ---------------------------------------------------------------------------
@@ -243,49 +253,123 @@ async def job_events(websocket: WebSocket, job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Projetos
+# ---------------------------------------------------------------------------
+
+
+def _require_project(project_id: str) -> projects.Project:
+    """Carrega um projeto ou devolve 404."""
+    project = projects.load(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Projeto nao encontrado.")
+    return project
+
+
+def _require_source(project: projects.Project) -> str:
+    """Caminho do video de origem, ou 409 se ele nao estiver mais no disco."""
+    if not project.has_source:
+        raise HTTPException(
+            status_code=409,
+            detail="O video de origem deste projeto nao esta mais disponivel.",
+        )
+    return project.media["path"]  # type: ignore[index]
+
+
+@app.get("/api/projects", response_model=list[ProjectSummary], tags=["projetos"])
+def list_projects() -> list[ProjectSummary]:
+    """Todos os projetos, do mais recente ao mais antigo."""
+    return [ProjectSummary(**project.summary()) for project in projects.list_all()]
+
+
+@app.get("/api/projects/{project_id}", response_model=ProjectDetail, tags=["projetos"])
+def get_project(project_id: str) -> ProjectDetail:
+    """Projeto completo: trechos analisados e cortes gerados."""
+    return ProjectDetail(**_require_project(project_id).to_dict())
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectDetail, tags=["projetos"])
+def rename_project(project_id: str, payload: ProjectRenameRequest) -> ProjectDetail:
+    """Renomeia o projeto."""
+    _require_project(project_id)
+    updated = projects.update(project_id, title=payload.title.strip())
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Projeto nao encontrado.")
+    return ProjectDetail(**updated.to_dict())
+
+
+@app.delete("/api/projects/{project_id}", tags=["projetos"])
+def delete_project(project_id: str, keep_files: bool = False) -> dict[str, Any]:
+    """Apaga o projeto. Por padrao remove tambem os cortes gerados."""
+    if not projects.delete(project_id, remove_files=not keep_files):
+        raise HTTPException(status_code=404, detail="Projeto nao encontrado.")
+    return {"deleted": project_id, "files_removed": not keep_files}
+
+
+@app.delete("/api/projects/{project_id}/clips/{clip_id}", tags=["projetos"])
+def delete_clip(project_id: str, clip_id: str) -> dict[str, Any]:
+    """Remove um corte do projeto e do disco."""
+    if not projects.remove_clip(project_id, clip_id):
+        raise HTTPException(status_code=404, detail="Corte nao encontrado.")
+    return {"deleted": clip_id}
+
+
+# ---------------------------------------------------------------------------
 # Edicao de cortes: previa e renderizacao sob medida
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/jobs/{job_id}/source", tags=["edicao"])
-def job_source(job_id: str) -> FileResponse:
-    """Serve o video de origem do job, para a previa no editor.
+@app.get("/api/projects/{project_id}/source", tags=["edicao"])
+def project_source(project_id: str) -> FileResponse:
+    """Serve o video de origem do projeto, para a previa no editor.
 
-    O `FileResponse` do Starlette responde a `Range`, entao o player consegue
-    pular direto para o trecho do corte sem baixar o arquivo inteiro — o que
-    importa quando a live tem 15 GB.
+    O `FileResponse` do Starlette responde a `Range`, entao o player pula
+    direto para o trecho do corte sem baixar o arquivo inteiro — o que importa
+    quando a live tem 15 GB.
     """
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job nao encontrado.")
-    if not job.media or not job.media.get("path"):
-        raise HTTPException(status_code=409, detail="A midia deste job ainda nao foi preparada.")
-
-    path = Path(job.media["path"])
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Arquivo de origem nao esta mais no disco.")
-
+    project = _require_project(project_id)
+    path = Path(_require_source(project))
     return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
-@app.get("/api/jobs/{job_id}/suggest", response_model=SuggestionResponse, tags=["edicao"])
-def suggest_layout(job_id: str, start: float, end: float) -> SuggestionResponse:
+@app.get(
+    "/api/projects/{project_id}/words", response_model=WordsResponse, tags=["edicao"]
+)
+def project_words(project_id: str, start: float, end: float) -> WordsResponse:
+    """Palavras faladas no trecho, com timestamps.
+
+    A previa da interface usa isto para desenhar a legenda animada em tempo
+    real, com o mesmo agrupamento que o arquivo `.ass` tera no final.
+    """
+    project = _require_project(project_id)
+    if not project.transcript_path:
+        return WordsResponse(words=[])
+
+    transcript = transcriber.load_transcript(project.transcript_path)
+    if transcript is None:
+        return WordsResponse(words=[])
+
+    return WordsResponse(words=[w.to_dict() for w in transcript.words_between(start, end)])
+
+
+@app.get(
+    "/api/projects/{project_id}/suggest",
+    response_model=SuggestionResponse,
+    tags=["edicao"],
+)
+def suggest_layout(project_id: str, start: float, end: float) -> SuggestionResponse:
     """Recomenda layout e formato para um trecho, antes de o usuario decidir.
 
     Detecta rostos em alguns segundos do meio do corte. Um rosto pequeno e
     encostado numa borda quase sempre e webcam sobre captura de tela — nesse
     caso a resposta ja vem com as duas faixas prontas para o layout empilhado.
     """
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job nao encontrado.")
-    if not job.media or not Path(job.media.get("path", "")).is_file():
-        raise HTTPException(status_code=409, detail="A midia deste job nao esta disponivel.")
+    project = _require_project(project_id)
+    source = _require_source(project)
     if end <= start:
         raise HTTPException(status_code=400, detail="Intervalo invalido.")
 
     try:
-        suggestion = reframer.suggest_layout(job.media["path"], start, end)
+        suggestion = reframer.suggest_layout(source, start, end)
     except Exception as exc:
         logger.exception("Sugestao de layout falhou")
         raise HTTPException(status_code=500, detail=f"Falha ao analisar: {exc}") from exc
@@ -293,28 +377,24 @@ def suggest_layout(job_id: str, start: float, end: float) -> SuggestionResponse:
     return SuggestionResponse(**suggestion.to_dict())
 
 
-@app.post("/api/jobs/{job_id}/render", response_model=RenderResponse, tags=["edicao"])
-def render_edited_clip(job_id: str, payload: RenderRequest) -> RenderResponse:
-    """Renderiza o corte, um arquivo por formato pedido.
+@app.post(
+    "/api/projects/{project_id}/render", response_model=RenderResponse, tags=["edicao"]
+)
+def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
+    """Renderiza o corte no projeto, um arquivo por formato pedido.
 
-    Reaproveita o video e a transcricao que o job ja produziu: so o encode do
+    Reaproveita o video e a transcricao que o projeto ja tem: so o encode do
     trecho e refeito, o que leva segundos em vez de repetir a pipeline inteira.
-    O plano de enquadramento e calculado uma vez por formato — a proporcao muda
-    a janela de crop, entao nao da para reaproveitar entre formatos diferentes.
+    O plano de enquadramento e recalculado por formato — a proporcao muda a
+    janela de crop, entao nao da para reaproveitar entre formatos diferentes.
     """
-    job = manager.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job nao encontrado.")
-    if not job.media or not Path(job.media.get("path", "")).is_file():
-        raise HTTPException(status_code=409, detail="A midia deste job nao esta disponivel.")
+    project = _require_project(project_id)
+    media_path = _require_source(project)
+
     if payload.end_time <= payload.start_time:
         raise HTTPException(status_code=400, detail="O fim do corte precisa vir depois do inicio.")
     if payload.reframe_mode == "composite" and not payload.regions:
-        raise HTTPException(
-            status_code=400, detail="O layout composto exige ao menos uma faixa."
-        )
-
-    media_path = job.media["path"]
+        raise HTTPException(status_code=400, detail="O layout composto exige ao menos uma faixa.")
 
     regions = (
         [
@@ -327,32 +407,46 @@ def render_edited_clip(job_id: str, payload: RenderRequest) -> RenderResponse:
         else None
     )
 
-    # Legenda e transcricao sao os mesmos para todos os formatos.
+    # Legenda e transcricao sao as mesmas para todos os formatos.
     words: list = []
     transcript_text = ""
-    if payload.burn_subtitles and job.transcript_path:
-        transcript = transcriber.load_transcript(job.transcript_path)
+    if payload.burn_subtitles and project.transcript_path:
+        transcript = transcriber.load_transcript(project.transcript_path)
         if transcript is not None:
             words = transcript.words_between(payload.start_time, payload.end_time)
             transcript_text = transcript.text_between(payload.start_time, payload.end_time)
+
+    style: dict[str, Any] | None = None
+    if payload.subtitle_style is not None:
+        s = payload.subtitle_style
+        style = {
+            "font_size": s.font_size,
+            "margin_v": s.margin_v,
+            "max_words": s.max_words,
+            "primary_color": subtitles.hex_to_ass(s.primary_color, settings.subtitle_primary_color),
+            "highlight_color": subtitles.hex_to_ass(
+                s.highlight_color, settings.subtitle_highlight_color
+            ),
+        }
 
     rendered: list[dict[str, Any]] = []
 
     for value in payload.aspect_ratios:
         aspect = AspectRatio(value)
+        title = payload.title or f"Corte {payload.start_time:.0f}s"
         candidate = ClipCandidate(
             id=uuid.uuid4().hex[:8],
             start_time=payload.start_time,
             end_time=payload.end_time,
-            title=payload.title or f"Corte {payload.start_time:.0f}s",
+            title=title,
             virality_score=0.0,
             final_score=0.0,
             transcript_text=transcript_text,
         )
 
         logger.info(
-            "Render do job %s: %.1f-%.1fs, %s, modo=%s",
-            job_id,
+            "Render no projeto %s: %.1f-%.1fs, %s, modo=%s",
+            project_id,
             payload.start_time,
             payload.end_time,
             value,
@@ -376,22 +470,28 @@ def render_edited_clip(job_id: str, payload: RenderRequest) -> RenderResponse:
                 words=words,
                 burn_subtitles=payload.burn_subtitles,
                 output_size=aspect.size(),
+                subtitle_style=style,
+                # Cada corte nasce dentro da pasta do seu projeto.
+                output_path=projects.clip_output_path(project, title, candidate.id),
             )
         except Exception as exc:
-            logger.exception("Render sob medida falhou (%s)", value)
+            logger.exception("Render falhou (%s)", value)
             raise HTTPException(
                 status_code=500, detail=f"Falha ao renderizar {value}: {exc}"
             ) from exc
 
-        thumbnail = Path(clip.thumbnail_path).name if clip.thumbnail_path else None
-        rendered.append(
-            {
-                **clip.to_dict(),
-                "aspect_ratio": value,
-                "media_url": f"/media/{Path(clip.video_path).name}",
-                "thumbnail_url": f"/media/{thumbnail}" if thumbnail else None,
-            }
-        )
+        entry = {
+            **clip.to_dict(),
+            "aspect_ratio": value,
+            "media_url": projects.media_url(project_id, clip.video_path),
+            "thumbnail_url": (
+                projects.media_url(project_id, clip.thumbnail_path)
+                if clip.thumbnail_path
+                else None
+            ),
+        }
+        projects.add_clip(project_id, entry)
+        rendered.append(entry)
 
     return RenderResponse(clips=rendered)
 
@@ -434,45 +534,37 @@ _FORMAT_LABELS = {
 
 
 @app.get("/api/clips", response_model=ClipListResponse, tags=["clips"])
-def list_clips() -> ClipListResponse:
-    """Lista os cortes ja renderizados, lidos do manifesto em disco."""
-    manifest = settings.clips_dir / "manifest.json"
-    if not manifest.exists():
-        return ClipListResponse(clips=[])
+def list_all_clips() -> ClipListResponse:
+    """Todos os cortes de todos os projetos, do mais recente ao mais antigo.
 
-    try:
-        entries = json.loads(manifest.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return ClipListResponse(clips=[])
-
+    Serve a visao "biblioteca" da interface; para navegar por video, use
+    `/api/projects`.
+    """
     clips: list[dict[str, Any]] = []
-    for entry in reversed(entries):
-        for clip in entry.get("clips", []):
-            video = Path(clip.get("video_path", ""))
-            if not video.exists():
+
+    for project in projects.list_all():
+        for clip in project.clips:
+            if not Path(clip.get("video_path", "")).is_file():
                 continue
             clips.append(
                 {
                     **clip,
-                    "source_title": entry.get("title"),
-                    "created_at": entry.get("created_at"),
-                    "media_url": f"/media/{video.name}",
-                    "thumbnail_url": (
-                        f"/media/{Path(clip['thumbnail_path']).name}"
-                        if clip.get("thumbnail_path")
-                        else None
-                    ),
+                    "project_id": project.id,
+                    "project_title": project.title,
                 }
             )
+
     return ClipListResponse(clips=clips)
 
 
-@app.get("/api/clips/{filename}/download", tags=["clips"])
-def download_clip(filename: str) -> FileResponse:
-    """Baixa um corte renderizado."""
-    # Normaliza o nome para impedir escapar do diretorio de saida.
-    path = (settings.clips_dir / Path(filename).name).resolve()
-    if not path.is_file() or settings.clips_dir.resolve() not in path.parents:
+@app.get("/api/projects/{project_id}/clips/{filename}/download", tags=["clips"])
+def download_clip(project_id: str, filename: str) -> FileResponse:
+    """Baixa um corte de um projeto."""
+    project = _require_project(project_id)
+
+    # Normaliza o nome para impedir escapar da pasta do projeto.
+    path = (project.clips_dir / Path(filename).name).resolve()
+    if not path.is_file() or project.clips_dir.resolve() not in path.parents:
         raise HTTPException(status_code=404, detail="Corte nao encontrado.")
     return FileResponse(path, media_type="video/mp4", filename=path.name)
 
