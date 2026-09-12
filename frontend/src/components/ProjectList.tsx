@@ -1,94 +1,94 @@
-import { clock } from "../lib/format";
-import type { ProjectSummary } from "../lib/types";
+import { Link } from "react-router-dom";
+import { Film, Trash2 } from "lucide-react";
+import { cn } from "@/lib/cn";
+import { clock, since } from "@/lib/format";
+import type { ProjectSummary } from "@/lib/types";
 
 interface Props {
   projects: ProjectSummary[];
-  onOpen: (project: ProjectSummary) => void;
-  onDelete: (project: ProjectSummary) => void;
+  onDelete?: (project: ProjectSummary) => void;
 }
 
 const STATUS: Record<ProjectSummary["status"], { label: string; className: string }> = {
-  new: { label: "novo", className: "bg-slate-700 text-slate-200" },
-  analyzing: { label: "analisando", className: "bg-brand-600 text-ink-950" },
-  ready: { label: "pronto", className: "bg-emerald-700 text-emerald-50" },
-  failed: { label: "falhou", className: "bg-red-800 text-red-50" },
+  new: { label: "novo", className: "bg-surface-3 text-muted" },
+  analyzing: { label: "analisando", className: "bg-accent text-accent-ink" },
+  ready: { label: "pronto", className: "bg-mint/15 text-mint" },
+  failed: { label: "falhou", className: "bg-rose/15 text-rose" },
 };
 
 /** Grade de projetos: um por vídeo de origem. */
-export function ProjectList({ projects, onOpen, onDelete }: Props) {
-  if (projects.length === 0) {
-    return (
-      <p className="card text-sm text-slate-500">
-        Nenhum projeto ainda. Cole um link acima para criar o primeiro.
-      </p>
-    );
-  }
-
+export function ProjectList({ projects, onDelete }: Props) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
       {projects.map((project) => {
         const status = STATUS[project.status] ?? STATUS.new;
+
         return (
           <article
             key={project.id}
-            className="card group flex flex-col gap-3 p-4 transition-colors hover:border-ink-600"
+            className="hairline group relative flex flex-col overflow-hidden rounded-3xl border border-line bg-surface transition-colors hover:border-line-strong"
           >
-            <button
-              className="flex flex-1 flex-col gap-3 text-left"
-              onClick={() => onOpen(project)}
-            >
-              <div className="relative aspect-video overflow-hidden rounded-lg bg-ink-950">
+            <Link to={`/projeto/${project.id}`} className="flex flex-1 flex-col">
+              <div className="relative aspect-video overflow-hidden bg-bg">
                 {project.thumbnail_url ? (
                   <img
                     src={project.thumbnail_url}
                     alt=""
-                    className="h-full w-full object-cover"
+                    className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
                     loading="lazy"
                   />
                 ) : (
-                  <div className="flex h-full items-center justify-center text-xs text-slate-600">
-                    sem cortes ainda
+                  <div className="flex size-full items-center justify-center">
+                    <Film className="size-7 text-line-strong" strokeWidth={1.5} />
                   </div>
                 )}
+
                 <span
-                  className={`absolute left-2 top-2 rounded px-2 py-0.5 text-[11px] font-semibold uppercase ${status.className}`}
+                  className={cn(
+                    "absolute top-3 left-3 rounded-full px-2.5 py-1 text-[10px] font-semibold tracking-wide uppercase",
+                    status.className,
+                  )}
                 >
                   {status.label}
                 </span>
+
                 {project.duration > 0 && (
-                  <span className="absolute bottom-2 right-2 rounded bg-ink-950/85 px-2 py-0.5 font-mono text-[11px] text-slate-300">
+                  <span className="num absolute right-3 bottom-3 rounded-full bg-bg/85 px-2 py-0.5 text-[11px] text-ink">
                     {clock(project.duration)}
                   </span>
                 )}
               </div>
 
-              <div className="min-w-0">
-                <h3 className="truncate text-sm font-semibold text-slate-100" title={project.title}>
+              <div className="flex flex-1 flex-col gap-1 p-4">
+                <h3 className="line-clamp-2 text-[14px] leading-snug font-semibold" title={project.title}>
                   {project.title}
                 </h3>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {project.clip_count} corte{project.clip_count === 1 ? "" : "s"} ·{" "}
-                  {project.candidate_count} trecho{project.candidate_count === 1 ? "" : "s"}
-                  {!project.has_source && " · sem o vídeo original"}
+
+                <p className="mt-auto pt-2 text-[12px] text-faint">
+                  <span className="num text-muted">{project.clip_count}</span> corte
+                  {project.clip_count === 1 ? "" : "s"} ·{" "}
+                  <span className="num text-muted">{project.candidate_count}</span> trecho
+                  {project.candidate_count === 1 ? "" : "s"} · {since(project.updated_at)}
                 </p>
+
+                {project.last_error && (
+                  <p className="truncate text-[12px] text-rose" title={project.last_error}>
+                    {project.last_error}
+                  </p>
+                )}
               </div>
-            </button>
+            </Link>
 
-            {project.last_error && (
-              <p className="truncate text-xs text-red-400" title={project.last_error}>
-                {project.last_error}
-              </p>
-            )}
-
-            <div className="flex items-center justify-between border-t border-ink-700 pt-2">
-              <span className="font-mono text-[11px] text-slate-600">{project.id}</span>
+            {onDelete && (
               <button
-                className="text-xs text-slate-500 opacity-0 transition-opacity hover:text-red-400 focus:opacity-100 group-hover:opacity-100"
+                aria-label={`Excluir ${project.title}`}
+                title="Excluir projeto"
                 onClick={() => onDelete(project)}
+                className="absolute top-2.5 right-2.5 flex size-8 items-center justify-center rounded-full bg-bg/80 text-muted opacity-0 transition hover:text-rose focus-visible:opacity-100 group-hover:opacity-100"
               >
-                Excluir
+                <Trash2 className="size-4" strokeWidth={1.9} />
               </button>
-            </div>
+            )}
           </article>
         );
       })}

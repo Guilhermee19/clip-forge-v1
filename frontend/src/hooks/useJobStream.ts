@@ -68,6 +68,7 @@ export function useJobStream(jobId: string | null): JobStream {
               candidates: [],
               result: null,
               media: null,
+              project_id: null,
               has_source: false,
             } as Job);
 
@@ -84,6 +85,7 @@ export function useJobStream(jobId: string | null): JobStream {
             error: event.error ?? base.error,
             candidates: event.candidates ?? base.candidates,
             media: event.media ?? base.media,
+            project_id: event.project_id ?? base.project_id,
             has_source: event.has_source ?? base.has_source,
             clips,
           };

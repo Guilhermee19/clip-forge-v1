@@ -6,11 +6,14 @@ import type {
   Job,
   JobRequest,
   LayoutSuggestion,
+  OllamaModels,
   ProjectDetail,
   ProjectSummary,
+  Requirement,
   RenderedClip,
   RenderRequest,
   RenderResponse,
+  SetupTask,
   Word,
 } from "./types";
 
@@ -31,6 +34,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<Health>("/api/health"),
+
+  // -------------------------------------------------- preparação do ambiente
+
+  /** O que o ambiente precisa, o que já tem, e como resolver o que falta. */
+  requirements: () => request<Requirement[]>("/api/setup/requirements"),
+
+  /** Dispara o plano de instalação de um requisito. */
+  install: (requirementId: string) =>
+    request<SetupTask>(`/api/setup/install/${requirementId}`, { method: "POST" }),
+
+  /** Estado e log de uma instalação (ou download) em andamento. */
+  setupTask: (taskId: string) => request<SetupTask>(`/api/setup/tasks/${taskId}`),
+
+  /** Modelos recomendados para escolher os cortes, com o estado de cada um. */
+  ollamaModels: () => request<OllamaModels>("/api/setup/models"),
+
+  /** Passa a usar outro modelo (grava no .env e na configuração em memória). */
+  selectModel: (model: string, numCtx?: number) =>
+    request<{ active: string; num_ctx: number }>("/api/setup/models/select", {
+      method: "POST",
+      body: JSON.stringify({ model, num_ctx: numCtx ?? null }),
+    }),
+
+  /** Baixa um modelo do Ollama. */
+  pullModel: (model: string) =>
+    request<SetupTask>("/api/setup/models/pull", {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    }),
+
+  // ------------------------------------------------------------------- jobs
 
   listJobs: () => request<Job[]>("/api/jobs"),
 

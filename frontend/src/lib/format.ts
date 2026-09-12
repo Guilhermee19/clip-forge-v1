@@ -19,9 +19,9 @@ export function scoreLabel(score: number): string {
 
 /** Cor do score, do vermelho (fraco) ao verde-agua (forte). */
 export function scoreColor(score: number): string {
-  if (score >= 0.75) return "text-brand-400";
-  if (score >= 0.5) return "text-amber-400";
-  return "text-slate-400";
+  if (score >= 0.75) return "text-accent";
+  if (score >= 0.5) return "text-amber";
+  return "text-muted";
 }
 
 export function reframeLabel(mode: string): string {
@@ -31,4 +31,19 @@ export function reframeLabel(mode: string): string {
     center: "Crop central",
   };
   return labels[mode] ?? mode;
+}
+
+/** Timestamp unix -> `agora`, `há 3 h`, `12/09`. */
+export function since(timestamp: number): string {
+  const seconds = Math.max(0, Date.now() / 1000 - timestamp);
+
+  if (seconds < 60) return "agora";
+  if (seconds < 3600) return `há ${Math.floor(seconds / 60)} min`;
+  if (seconds < 86_400) return `há ${Math.floor(seconds / 3600)} h`;
+  if (seconds < 604_800) return `há ${Math.floor(seconds / 86_400)} d`;
+
+  return new Date(timestamp * 1000).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+  });
 }

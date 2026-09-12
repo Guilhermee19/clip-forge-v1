@@ -32,16 +32,31 @@ from app.api.schemas import (
     HealthResponse,
     JobCreateRequest,
     JobSummary,
+    OllamaModelRequest,
+    OllamaModelsResponse,
+    OllamaSelection,
     ProjectDetail,
     ProjectRenameRequest,
     ProjectSummary,
     RenderRequest,
     RenderResponse,
+    RequirementStatus,
+    SetupTask,
     SuggestionResponse,
     WordsResponse,
 )
 from app.config import settings
-from app.core import analyzer, ingest, projects, reframer, renderer, subtitles, transcriber
+from app.core import (
+    analyzer,
+    ingest,
+    ollama_models,
+    projects,
+    reframer,
+    renderer,
+    setup_doctor,
+    subtitles,
+    transcriber,
+)
 from app.core.pipeline import PipelineOptions
 from app.models import AspectRatio, ClipCandidate, LayoutRegion
 from app.utils import ffmpeg
@@ -123,6 +138,84 @@ def health() -> HealthResponse:
         llm_message=llm_message,
         output_dir=str(settings.clips_dir),
     )
+
+
+# ---------------------------------------------------------------------------
+# Preparacao do ambiente
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/setup/requirements", response_model=list[RequirementStatus], tags=["sistema"])
+def setup_requirements() -> list[RequirementStatus]:
+    """O que o ambiente precisa, o que ja tem, e como resolver o que falta."""
+    return [RequirementStatus(**item) for item in setup_doctor.status()]
+
+
+@app.post(
+    "/api/setup/install/{requirement_id}",
+    response_model=SetupTask,
+    status_code=202,
+    tags=["sistema"],
+)
+def setup_install(requirement_id: str) -> SetupTask:
+    """Roda o plano de instalacao daquele requisito.
+
+    Os comandos vivem fixos em `core/setup_doctor.py`: o `requirement_id` so
+    escolhe qual plano rodar, nunca vira argumento de shell.
+    """
+    running = setup_doctor.running_for(requirement_id)
+    if running is not None:
+        raise HTTPException(status_code=409, detail="Essa instalacao ja esta rodando.")
+
+    try:
+        task = setup_doctor.start_install(requirement_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Requisito desconhecido.") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    return SetupTask(**task.to_dict())
+
+
+@app.get("/api/setup/models", response_model=OllamaModelsResponse, tags=["sistema"])
+def list_ollama_models() -> OllamaModelsResponse:
+    """Modelos recomendados para escolher os cortes, com o estado de cada um."""
+    return OllamaModelsResponse(**ollama_models.options())
+
+
+@app.post("/api/setup/models/select", response_model=OllamaSelection, tags=["sistema"])
+def select_ollama_model(payload: OllamaModelRequest) -> OllamaSelection:
+    """Troca o modelo em uso, gravando no `.env` e na configuracao em memoria."""
+    try:
+        return OllamaSelection(**ollama_models.select(payload.model, num_ctx=payload.num_ctx))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Nao consegui gravar o .env: {exc}") from None
+
+
+@app.post(
+    "/api/setup/models/pull", response_model=SetupTask, status_code=202, tags=["sistema"]
+)
+def pull_ollama_model(payload: OllamaModelRequest) -> SetupTask:
+    """Baixa um modelo, acompanhado pelo mesmo mecanismo das instalacoes."""
+    running = setup_doctor.running_for(f"pull:{payload.model.strip()}")
+    if running is not None:
+        return SetupTask(**running.to_dict())
+
+    try:
+        return SetupTask(**setup_doctor.start_pull(payload.model).to_dict())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.get("/api/setup/tasks/{task_id}", response_model=SetupTask, tags=["sistema"])
+def setup_task(task_id: str) -> SetupTask:
+    """Estado e log de uma instalacao em andamento."""
+    task = setup_doctor.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Instalacao nao encontrada.")
+    return SetupTask(**task.to_dict())
 
 
 # ---------------------------------------------------------------------------

@@ -219,3 +219,66 @@ export interface ProgressEvent {
   transcript_path?: string;
   project_id?: string;
 }
+
+/** Um item do ambiente no diagnóstico: como está e como consertar. */
+export interface Requirement {
+  id: string;
+  label: string;
+  summary: string;
+  why: string;
+  ok: boolean;
+  detail: string;
+  tutorial: string[];
+  docs_url: string;
+  /** Os comandos que o botão de instalar vai rodar, mostrados antes. */
+  commands: string[];
+  can_install: boolean;
+  /** Outro requisito que precisa ser resolvido antes deste. */
+  blocked_by: string | null;
+  needs_restart: boolean;
+}
+
+/** Uma instalação disparada pela interface, com log ao vivo. */
+export interface SetupTask {
+  id: string;
+  requirement_id: string;
+  status: "running" | "completed" | "failed";
+  log: string[];
+  error: string | null;
+  started_at: number;
+  finished_at: number | null;
+  needs_restart: boolean;
+}
+
+/** Um modelo do Ollama recomendado para a seleção de cortes. */
+export interface OllamaModelOption {
+  name: string;
+  label: string;
+  params: string;
+  download_gb: number;
+  vram_gb: number;
+  context: string;
+  tier: "leve" | "equilibrado" | "forte";
+  note: string;
+  suggested_num_ctx: number;
+  /** Modelos de raciocínio pensam antes de responder: mais lentos. */
+  thinking: boolean;
+  installed: boolean;
+  active: boolean;
+}
+
+/** Modelo já baixado que não está na lista curada, mas dá para usar. */
+export interface OllamaModelExtra {
+  name: string;
+  size_gb: number;
+  active: boolean;
+}
+
+export interface OllamaModels {
+  active: string;
+  num_ctx: number;
+  /** False quando o Ollama não respondeu: o catálogo aparece sem marcações. */
+  available: boolean;
+  models: OllamaModelOption[];
+  extras: OllamaModelExtra[];
+}

@@ -1,5 +1,7 @@
-import { clock, scoreColor, scoreLabel } from "../lib/format";
-import type { ClipCandidate } from "../lib/types";
+import { Pencil } from "lucide-react";
+import { cn } from "@/lib/cn";
+import { clock, scoreColor, scoreLabel } from "@/lib/format";
+import type { ClipCandidate } from "@/lib/types";
 
 interface Props {
   candidates: ClipCandidate[];
@@ -14,62 +16,48 @@ interface Props {
  * gastar GPU codificando.
  */
 export function CandidateList({ candidates, onEdit, editable = false }: Props) {
-  if (candidates.length === 0) return null;
-
   return (
-    <section className="card space-y-2">
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
-          Trechos selecionados
-        </h2>
-        {editable && (
-          <span className="text-xs text-slate-500">
-            clique para pré-visualizar e ajustar
-          </span>
-        )}
-      </div>
-
-      <ol className="divide-y divide-ink-700">
-        {candidates.map((candidate, index) => {
-          const row = (
-            <>
-              <span className="w-5 shrink-0 text-right font-mono text-xs text-slate-600">
-                {index + 1}
-              </span>
-              <span
-                className={`w-10 shrink-0 text-right font-mono text-sm font-semibold ${scoreColor(
-                  candidate.final_score
-                )}`}
-              >
-                {scoreLabel(candidate.final_score)}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-slate-200">{candidate.title}</p>
-                <p className="font-mono text-xs text-slate-500">
-                  {clock(candidate.start_time)} → {clock(candidate.end_time)} ·{" "}
-                  {Math.round(candidate.duration)}s
-                </p>
-              </div>
-            </>
-          );
-
-          return (
-            <li key={candidate.id}>
-              {editable && onEdit ? (
-                <button
-                  className="flex w-full items-start gap-3 py-2.5 text-left transition-colors hover:bg-ink-800/50"
-                  onClick={() => onEdit(candidate)}
-                >
-                  {row}
-                  <span className="shrink-0 self-center text-xs text-brand-500">Editar →</span>
-                </button>
-              ) : (
-                <div className="flex items-start gap-3 py-2.5">{row}</div>
+    <ol className="divide-y divide-line">
+      {candidates.map((candidate, index) => {
+        const row = (
+          <>
+            <span className="num w-5 shrink-0 text-right text-[12px] text-faint">{index + 1}</span>
+            <span
+              className={cn(
+                "num w-9 shrink-0 text-right text-[15px] font-semibold",
+                scoreColor(candidate.final_score),
               )}
-            </li>
-          );
-        })}
-      </ol>
-    </section>
+            >
+              {scoreLabel(candidate.final_score)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13px] text-ink">{candidate.title}</p>
+              <p className="num text-[12px] text-faint">
+                {clock(candidate.start_time)} → {clock(candidate.end_time)} ·{" "}
+                {Math.round(candidate.duration)}s
+              </p>
+            </div>
+          </>
+        );
+
+        return (
+          <li key={candidate.id}>
+            {editable && onEdit ? (
+              <button
+                className="group flex w-full cursor-pointer items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-surface-2"
+                onClick={() => onEdit(candidate)}
+              >
+                {row}
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full text-faint transition-colors group-hover:bg-accent group-hover:text-accent-ink">
+                  <Pencil className="size-3.5" strokeWidth={2} />
+                </span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-3 px-5 py-3">{row}</div>
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }

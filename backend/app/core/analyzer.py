@@ -102,6 +102,11 @@ def _extract_json(text: str) -> dict[str, Any]:
     """
     text = text.strip()
 
+    # Modelos de raciocinio (Qwen3 e afins) pensam em voz alta antes de
+    # responder. O bloco costuma ter chaves soltas, que envenenariam a busca
+    # pelo primeiro '{' la embaixo.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
     fenced = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1).strip()

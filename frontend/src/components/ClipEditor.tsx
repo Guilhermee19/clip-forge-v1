@@ -17,7 +17,7 @@ import type {
 } from "../lib/types";
 
 interface Props {
-  jobId: string;
+  projectId: string;
   candidate: ClipCandidate;
   media: MediaInfo;
   formats: FormatOption[];
@@ -63,7 +63,7 @@ const PALETTE = ["#FFE500", "#2DD4BF", "#F472B6", "#FB923C", "#A78BFA", "#FFFFFF
  * matemática de recorte que o FFmpeg vai usar. Nenhum arquivo é gerado até
  * clicar em salvar, então experimentar é instantâneo.
  */
-export function ClipEditor({ jobId, candidate, media, formats, onRendered, onClose }: Props) {
+export function ClipEditor({ projectId, candidate, media, formats, onRendered, onClose }: Props) {
   // Um único estado guarda o elemento: serve de "ref" para os comandos de
   // playback e dispara o render quando o player aparece, para a prévia começar.
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
@@ -103,7 +103,7 @@ export function ClipEditor({ jobId, candidate, media, formats, onRendered, onClo
     setSuggesting(true);
     setError(null);
     try {
-      const result = await api.suggestLayout(jobId, start, end);
+      const result = await api.suggestLayout(projectId, start, end);
       setSuggestion(result);
       setReframe(result.mode);
       setSelected([result.aspect_ratio]);
@@ -113,7 +113,7 @@ export function ClipEditor({ jobId, candidate, media, formats, onRendered, onClo
     } finally {
       setSuggesting(false);
     }
-  }, [jobId, start, end]);
+  }, [projectId, start, end]);
 
   useEffect(() => {
     askSuggestion();
@@ -124,10 +124,10 @@ export function ClipEditor({ jobId, candidate, media, formats, onRendered, onClo
   // As palavras alimentam a legenda desenhada na prévia.
   useEffect(() => {
     api
-      .words(jobId, start, end)
+      .words(projectId, start, end)
       .then(setWords)
       .catch(() => setWords([]));
-  }, [jobId, start, end]);
+  }, [projectId, start, end]);
 
   // ----------------------------------------------------------- player
 
@@ -179,7 +179,7 @@ export function ClipEditor({ jobId, candidate, media, formats, onRendered, onClo
     setRendering(true);
     setError(null);
     try {
-      const response = await api.renderClip(jobId, {
+      const response = await api.renderClip(projectId, {
         start_time: Number(start.toFixed(2)),
         end_time: Number(end.toFixed(2)),
         title,
@@ -246,7 +246,7 @@ export function ClipEditor({ jobId, candidate, media, formats, onRendered, onClo
               <video
                 ref={setVideoEl}
                 className="w-full"
-                src={api.sourceUrl(jobId)}
+                src={api.sourceUrl(projectId)}
                 muted
                 playsInline
                 onTimeUpdate={enforceRange}

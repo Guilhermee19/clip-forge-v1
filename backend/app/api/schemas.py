@@ -67,6 +67,89 @@ class HealthResponse(BaseModel):
     output_dir: str
 
 
+class OllamaModelOption(BaseModel):
+    """Um modelo recomendado para a selecao de cortes."""
+
+    name: str
+    label: str
+    params: str
+    download_gb: float
+    vram_gb: float
+    context: str
+    tier: Literal["leve", "equilibrado", "forte"]
+    note: str
+    suggested_num_ctx: int
+    thinking: bool = False
+    installed: bool = False
+    active: bool = False
+
+
+class OllamaModelExtra(BaseModel):
+    """Modelo ja baixado que nao esta na lista curada, mas da para usar."""
+
+    name: str
+    size_gb: float
+    active: bool = False
+
+
+class OllamaModelsResponse(BaseModel):
+    """A vitrine de modelos, com o que esta baixado e o que esta em uso."""
+
+    active: str
+    num_ctx: int
+    # False quando o Ollama nao respondeu: o catalogo aparece, sem marcacoes.
+    available: bool
+    models: list[OllamaModelOption] = []
+    extras: list[OllamaModelExtra] = []
+
+
+class OllamaModelRequest(BaseModel):
+    """Escolher ou baixar um modelo pela interface."""
+
+    model: str = Field(..., min_length=1, max_length=160)
+    # Só na selecao: sobrepoe o num_ctx sugerido para o modelo.
+    num_ctx: int | None = Field(default=None, ge=2048, le=131_072)
+
+
+class OllamaSelection(BaseModel):
+    """O que passou a valer depois da troca."""
+
+    active: str
+    num_ctx: int
+
+
+class RequirementStatus(BaseModel):
+    """Um item do ambiente: como esta, como consertar na mao, o que o botao roda."""
+
+    id: str
+    label: str
+    summary: str
+    why: str
+    ok: bool
+    detail: str
+    tutorial: list[str] = []
+    docs_url: str
+    # Os comandos do plano automatico, exibidos antes de rodar.
+    commands: list[str] = []
+    can_install: bool = False
+    # Preenchido quando outro requisito precisa ser resolvido antes deste.
+    blocked_by: str | None = None
+    needs_restart: bool = False
+
+
+class SetupTask(BaseModel):
+    """Uma instalacao disparada pela interface."""
+
+    id: str
+    requirement_id: str
+    status: Literal["running", "completed", "failed"]
+    log: list[str] = []
+    error: str | None = None
+    started_at: float
+    finished_at: float | None = None
+    needs_restart: bool = False
+
+
 class ProjectSummary(BaseModel):
     """Um projeto na listagem: o suficiente para o card, sem o peso do resto."""
 
