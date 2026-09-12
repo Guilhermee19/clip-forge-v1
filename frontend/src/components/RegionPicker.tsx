@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { LayoutRegion } from "../lib/types";
+import type { LayoutRegion } from "@/lib/types";
 
 interface Props {
   regions: LayoutRegion[];
@@ -7,10 +7,16 @@ interface Props {
   /** Índice da faixa em foco; as outras ficam esmaecidas. */
   active: number;
   onSelect: (index: number) => void;
+  /**
+   * Altura/largura que cada faixa precisa ter, dado o quanto da tela final ela
+   * ocupa. Redimensionar passa a escalar a marcação em vez de deformá-la: uma
+   * marcação fora dessa proporção perde pedaços no vídeo gerado.
+   */
+  ratioFor: (index: number) => number;
 }
 
-const COLORS = ["border-brand-500", "border-amber-400", "border-sky-400"];
-const FILLS = ["bg-brand-500/10", "bg-amber-400/10", "bg-sky-400/10"];
+const COLORS = ["border-accent", "border-amber", "border-sky"];
+const FILLS = ["bg-accent/10", "bg-amber/10", "bg-sky/10"];
 
 type DragKind = "move" | "resize";
 
@@ -21,7 +27,7 @@ type DragKind = "move" | "resize";
  * independentemente do tamanho que o player tiver na tela ou da resolução do
  * vídeo, e é exatamente o que o backend espera receber.
  */
-export function RegionPicker({ regions, onChange, active, onSelect }: Props) {
+export function RegionPicker({ regions, onChange, active, onSelect, ratioFor }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{
     index: number;
@@ -70,10 +76,12 @@ export function RegionPicker({ regions, onChange, active, onSelect }: Props) {
         y: clamp(base.y + dy, 0, 1 - base.height),
       });
     } else {
-      // Redimensiona pelo canto inferior direito, com um mínimo utilizável.
-      const width = clamp(base.width + dx, 0.08, 1 - base.x);
-      const height = clamp(base.height + dy, 0.08, 1 - base.y);
-      update(drag.index, { width, height });
+      // Escala pelo canto inferior direito mantendo a proporção da faixa: o
+      // arraste define a largura e a altura sai dela.
+      const ratio = ratioFor(drag.index);
+      const maxWidth = Math.min(1 - base.x, (1 - base.y) / ratio);
+      const width = clamp(base.width + dx, 0.08, Math.max(0.08, maxWidth));
+      update(drag.index, { width, height: width * ratio });
     }
   };
 
@@ -106,19 +114,21 @@ export function RegionPicker({ regions, onChange, active, onSelect }: Props) {
             }}
             onPointerDown={(event) => startDrag(event, index, "move")}
           >
+            {/* Colada no topo do frame, a etiqueta acima da caixa seria
+                cortada pelo recorte do player; nesse caso ela entra. */}
             <span
-              className={`absolute -top-6 left-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                focused ? "bg-ink-950 text-slate-100" : "bg-ink-950/70 text-slate-400"
-              }`}
+              className={`absolute left-1 rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${
+                region.y < 0.08 ? "top-1" : "-top-7"
+              } ${focused ? "bg-bg text-ink" : "bg-bg/70 text-muted"}`}
             >
               {index + 1}. {region.label || "Faixa"}
             </span>
 
             {/* Alça de redimensionamento no canto inferior direito. */}
             <span
-              className={`absolute -bottom-1.5 -right-1.5 h-4 w-4 cursor-nwse-resize rounded-sm border-2 ${
+              className={`absolute -right-2 -bottom-2 size-4 cursor-nwse-resize rounded-full border-2 ${
                 COLORS[index % COLORS.length]
-              } bg-ink-950`}
+              } bg-bg`}
               onPointerDown={(event) => startDrag(event, index, "resize")}
             />
           </div>

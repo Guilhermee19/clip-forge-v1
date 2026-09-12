@@ -1,5 +1,14 @@
 import { useEffect, useRef } from "react";
-import type { AspectRatio, LayoutRegion, ReframeMode, SubtitleStyle, Word } from "../lib/types";
+import { cropOrigin, cropWindow, sampleCamera } from "@/lib/camera";
+import { cn } from "@/lib/cn";
+import type {
+  AspectRatio,
+  CameraKeyframe,
+  LayoutRegion,
+  ReframeMode,
+  SubtitleStyle,
+  Word,
+} from "@/lib/types";
 
 interface Props {
   /** Player de origem já carregado; usamos seus frames como textura. */
@@ -8,6 +17,10 @@ interface Props {
   mode: ReframeMode;
   regions: LayoutRegion[];
   manualOffset: number;
+  /** Posições da câmera no tempo, usadas no modo keyframe. */
+  keyframes: CameraKeyframe[];
+  /** Fecha o enquadramento; constante no corte, como no FFmpeg. */
+  zoom: number;
   sourceWidth: number;
   sourceHeight: number;
   words: Word[];
@@ -15,6 +28,8 @@ interface Props {
   style: SubtitleStyle;
   /** Início do corte, para posicionar a legenda no tempo certo. */
   clipStart: number;
+  /** Arrastar a legenda na prévia devolve a posição, em frações da saída. */
+  onMoveCaption?: (position: { x: number; y: number }) => void;
 }
 
 /** Altura de referência do canvas; a largura sai da proporção escolhida. */
@@ -35,12 +50,15 @@ export function LivePreview({
   mode,
   regions,
   manualOffset,
+  keyframes,
+  zoom,
   sourceWidth,
   sourceHeight,
   words,
   subtitles,
   style,
   clipStart,
+  onMoveCaption,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<number>(0);
@@ -52,12 +70,25 @@ export function LivePreview({
     mode,
     regions,
     manualOffset,
+    keyframes,
+    zoom,
     words,
     subtitles,
     style,
     clipStart,
   });
-  state.current = { aspect, mode, regions, manualOffset, words, subtitles, style, clipStart };
+  state.current = {
+    aspect,
+    mode,
+    regions,
+    manualOffset,
+    keyframes,
+    zoom,
+    words,
+    subtitles,
+    style,
+    clipStart,
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -86,6 +117,18 @@ export function LivePreview({
 
       if (current.mode === "composite" && current.regions.length > 0) {
         drawBands(ctx, video, current.regions, outWidth, outHeight, sourceWidth, sourceHeight);
+      } else if (current.mode === "keyframe") {
+        drawKeyframed(
+          ctx,
+          video,
+          outWidth,
+          outHeight,
+          sourceWidth,
+          sourceHeight,
+          current.keyframes,
+          current.zoom,
+          video.currentTime - current.clipStart
+        );
       } else {
         drawSingle(
           ctx,
@@ -114,12 +157,69 @@ export function LivePreview({
     return () => cancelAnimationFrame(frameRef.current);
   }, [video, sourceWidth, sourceHeight]);
 
+  // O canvas aparece escalado na tela; converter pelo retângulo do elemento
+  // dá a fração certa sem depender da resolução interna.
+  const positionFrom = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+    };
+  };
+
+  const draggable = Boolean(onMoveCaption) && subtitles;
+
   return (
     <canvas
       ref={canvasRef}
-      className="mx-auto max-h-[420px] rounded-lg bg-black"
+      className={cn(
+        "m-auto max-h-full max-w-full rounded-2xl bg-black",
+        draggable && "cursor-grab touch-none active:cursor-grabbing"
+      )}
       style={{ imageRendering: "auto" }}
+      onPointerDown={(event) => {
+        if (!draggable) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        onMoveCaption?.(positionFrom(event));
+      }}
+      onPointerMove={(event) => {
+        if (!draggable || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        onMoveCaption?.(positionFrom(event));
+      }}
     />
+  );
+}
+
+/**
+ * Recorte que segue as posições marcadas na timeline.
+ *
+ * A janela é sempre do mesmo tamanho — o FFmpeg exige saída de dimensão fixa —,
+ * então o que muda no tempo é só para onde ela aponta.
+ */
+function drawKeyframed(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  outWidth: number,
+  outHeight: number,
+  sourceWidth: number,
+  sourceHeight: number,
+  keyframes: CameraKeyframe[],
+  zoom: number,
+  relativeTime: number
+) {
+  const size = cropWindow(sourceWidth, sourceHeight, outWidth / outHeight, zoom);
+  const { left, top } = cropOrigin(sampleCamera(keyframes, relativeTime), size);
+
+  ctx.drawImage(
+    video,
+    left * sourceWidth,
+    top * sourceHeight,
+    size.width * sourceWidth,
+    size.height * sourceHeight,
+    0,
+    0,
+    outWidth,
+    outHeight
   );
 }
 
@@ -224,7 +324,14 @@ function cardFor(words: Word[], time: number, maxWords: number): { card: Word[];
   return { card: [], active: -1 };
 }
 
-/** Desenha o cartão de legenda com a palavra atual destacada. */
+/**
+ * Desenha o cartão de legenda, no mesmo tipo que o `.ass` vai usar.
+ *
+ * Cada preset aqui espelha um `_preset_shape` do backend: `karaoke` colore a
+ * palavra falada, `word` mostra uma de cada vez, `block` põe uma caixa opaca
+ * atrás do texto e `clean` abre mão do destaque colorido em favor de um
+ * contorno grosso.
+ */
 function drawCaption(
   ctx: CanvasRenderingContext2D,
   words: Word[],
@@ -233,14 +340,15 @@ function drawCaption(
   outHeight: number,
   style: SubtitleStyle
 ) {
-  const { card, active } = cardFor(words, time, style.max_words);
+  // O preset "uma palavra" é só um cartão de tamanho 1 — igual ao backend.
+  const maxWords = style.preset === "word" ? 1 : style.max_words;
+  const { card, active } = cardFor(words, time, maxWords);
   if (card.length === 0) return;
 
   // O estilo é definido em pixels da saída real (1920 de altura); o canvas é
   // menor, então tudo é escalado pelo mesmo fator.
   const scale = outHeight / 1920;
   const fontSize = style.font_size * scale;
-  const marginV = style.margin_v * scale;
 
   // Mesma família que o `.ass` usa, para a prévia bater com o arquivo final.
   ctx.font = `800 ${fontSize}px Montserrat, Inter, system-ui, sans-serif`;
@@ -251,18 +359,38 @@ function drawCaption(
   const widths = card.map((word) => ctx.measureText(word.text.trim()).width);
   const total = widths.reduce((sum, w) => sum + w, 0) + gap * (card.length - 1);
 
-  let x = (outWidth - total) / 2;
-  const y = outHeight - marginV;
+  // Com posição livre o texto é ancorado pelo centro (o `\an5\pos` do ASS);
+  // sem ela, cai na margem inferior como antes.
+  const centerX = style.pos_x === null ? 0.5 : style.pos_x;
+  const baseline =
+    style.pos_y === null
+      ? outHeight - style.margin_v * scale
+      : style.pos_y * outHeight + fontSize * 0.35;
 
-  ctx.lineWidth = Math.max(2, fontSize * 0.14);
-  ctx.strokeStyle = "#000";
-  ctx.lineJoin = "round";
+  let x = centerX * outWidth - total / 2;
+
+  if (style.preset === "block") {
+    const padding = fontSize * 0.3;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(
+      x - padding,
+      baseline - fontSize * 0.95,
+      total + padding * 2,
+      fontSize * 1.3
+    );
+  } else {
+    ctx.lineWidth = Math.max(2, fontSize * (style.preset === "clean" ? 0.2 : 0.14));
+    ctx.strokeStyle = "#000";
+    ctx.lineJoin = "round";
+  }
 
   card.forEach((word, index) => {
     const text = word.text.trim();
-    ctx.fillStyle = index === active ? style.highlight_color : style.primary_color;
-    ctx.strokeText(text, x, y);
-    ctx.fillText(text, x, y);
+    const highlighted = index === active && style.preset !== "clean";
+
+    ctx.fillStyle = highlighted ? style.highlight_color : style.primary_color;
+    if (style.preset !== "block") ctx.strokeText(text, x, baseline);
+    ctx.fillText(text, x, baseline);
     x += widths[index] + gap;
   });
 }

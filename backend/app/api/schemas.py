@@ -201,7 +201,9 @@ class ClipListResponse(BaseModel):
 
 
 AspectRatioLiteral = Literal["9:16", "4:5", "1:1", "16:9"]
-ReframeModeLiteral = Literal["auto", "single", "split", "center", "manual", "composite"]
+ReframeModeLiteral = Literal[
+    "auto", "single", "split", "center", "manual", "keyframe", "composite"
+]
 
 
 class LayoutRegionInput(BaseModel):
@@ -215,10 +217,39 @@ class LayoutRegionInput(BaseModel):
     label: str = ""
 
 
+class CameraKeyframeInput(BaseModel):
+    """Onde a camera aponta num instante do corte.
+
+    `x` e `y` sao o CENTRO do enquadramento em fracoes do frame de origem, nao
+    o canto: e assim que a interface pensa, e o backend converte.
+    """
+
+    t: float = Field(..., ge=0, description="Segundos desde o inicio do corte.")
+    x: float = Field(..., ge=0.0, le=1.0)
+    y: float = Field(..., ge=0.0, le=1.0)
+    # True corta seco aqui; False desliza desde o ponto anterior.
+    hold: bool = True
+
+
+SubtitlePresetLiteral = Literal["karaoke", "word", "block", "clean"]
+
+
 class SubtitleStyle(BaseModel):
     """Ajustes de legenda escolhidos por corte na interface."""
 
     font_size: int = Field(default=84, ge=24, le=200)
+    preset: SubtitlePresetLiteral = Field(
+        default="karaoke",
+        description=(
+            "Tipo da legenda: 'karaoke' destaca a palavra falada em cor, 'word' "
+            "mostra uma palavra por vez, 'block' poe uma caixa opaca atras do "
+            "texto e 'clean' usa so contorno grosso, sem destaque colorido."
+        ),
+    )
+    # Posicao livre do texto, em fracoes da saida. Quando vem, manda no lugar
+    # do `margin_v`.
+    pos_x: float | None = Field(default=None, ge=0.0, le=1.0)
+    pos_y: float | None = Field(default=None, ge=0.0, le=1.0)
     # Distancia da legenda ate a base do video, em pixels da saida.
     margin_v: int = Field(default=420, ge=0, le=1600)
     # Cores em `#RRGGBB`; o backend converte para o BGR que o ASS espera.
@@ -257,6 +288,24 @@ class RenderRequest(BaseModel):
     regions: list[LayoutRegionInput] | None = Field(
         default=None,
         description="Faixas empilhadas, de cima para baixo. Exigido no modo 'composite'.",
+    )
+    camera_keyframes: list[CameraKeyframeInput] | None = Field(
+        default=None,
+        max_length=60,
+        description=(
+            "Posicoes da camera ao longo do corte. Exigido no modo 'keyframe'; "
+            "entre dois pontos a janela desliza, ou salta quando o seguinte "
+            "pede corte seco."
+        ),
+    )
+    zoom: float = Field(
+        default=1.0,
+        ge=1.0,
+        le=4.0,
+        description=(
+            "Fecha o enquadramento: 1.0 e a maior janela que cabe, 2.0 pega "
+            "metade da largura. Constante no corte inteiro."
+        ),
     )
     burn_subtitles: bool = True
     subtitle_style: SubtitleStyle | None = None

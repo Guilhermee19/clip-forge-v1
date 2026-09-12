@@ -154,6 +154,7 @@ class ReframeMode(str, Enum):
     SPLIT = "split"          # duas pessoas empilhadas (split-screen vertical)
     CENTER = "center"        # crop fixo no centro (sem rosto detectado)
     MANUAL = "manual"        # posicao horizontal escolhida a mao na UI
+    KEYFRAME = "keyframe"    # camera movida a mao ao longo do tempo, na UI
     COMPOSITE = "composite"  # varias regioes do frame empilhadas (gameplay + webcam)
 
 
@@ -196,6 +197,9 @@ class CropKeyframe:
     t: float
     x: float
     y: float
+    # True corta seco neste ponto: a janela fica parada no valor anterior e
+    # salta aqui. False (padrao) desliza suavemente desde o keyframe anterior.
+    hold: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

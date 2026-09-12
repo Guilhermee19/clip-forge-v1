@@ -109,6 +109,20 @@ def _find_video(cache_dir: Path) -> Path | None:
     return candidates[0]
 
 
+_COVER_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def find_cover(video_path: str | Path) -> Path | None:
+    """Capa que o yt-dlp baixou ao lado do video, se houver."""
+    directory = Path(video_path).parent
+    covers = [
+        path
+        for path in directory.glob("source.*")
+        if path.is_file() and path.suffix.lower() in _COVER_SUFFIXES and path.stat().st_size > 0
+    ]
+    return max(covers, key=lambda p: p.stat().st_size) if covers else None
+
+
 def _download_in_progress(cache_dir: Path) -> bool:
     """True se ha residuo de um download incompleto no diretorio."""
     return any(cache_dir.glob("source.*.part")) or any(cache_dir.glob("source.*.ytdl"))
@@ -166,6 +180,9 @@ def download(url: str, *, on_progress: ProgressFn | None = None) -> Path:
         "progress_hooks": [hook],
         "retries": 5,
         "concurrent_fragment_downloads": 4,
+        # A capa oficial do video vale mais que um frame qualquer na listagem
+        # de projetos: e a miniatura que a pessoa reconhece.
+        "writethumbnail": True,
     }
     if settings.ytdlp_cookies:
         options["cookiefile"] = settings.ytdlp_cookies

@@ -56,7 +56,19 @@ export type ReframeMode =
   | "split"
   | "center"
   | "manual"
+  | "keyframe"
   | "composite";
+
+/** Onde a câmera aponta num instante do corte. */
+export interface CameraKeyframe {
+  /** Segundos desde o início do corte. */
+  t: number;
+  /** Centro do enquadramento, em frações do frame de origem (0-1). */
+  x: number;
+  y: number;
+  /** True corta seco aqui; false desliza desde o ponto anterior. */
+  hold: boolean;
+}
 
 /** Uma faixa do layout empilhado, em frações do frame de origem (0-1). */
 export interface LayoutRegion {
@@ -90,9 +102,16 @@ export interface MediaInfo {
   source_url: string | null;
 }
 
+/** Os tipos de legenda oferecidos no editor. */
+export type SubtitlePreset = "karaoke" | "word" | "block" | "clean";
+
 /** Estilo da legenda, ajustável por corte. Cores em `#RRGGBB`. */
 export interface SubtitleStyle {
   font_size: number;
+  preset: SubtitlePreset;
+  /** Centro do texto em frações da saída. Quando definido, manda no margin_v. */
+  pos_x: number | null;
+  pos_y: number | null;
   /** Distância até a base do vídeo, em pixels da saída (altura 1920). */
   margin_v: number;
   primary_color: string;
@@ -112,6 +131,10 @@ export interface RenderRequest {
   manual_offset?: number | null;
   /** Faixas empilhadas, de cima para baixo. Exigido no modo composite. */
   regions?: LayoutRegion[] | null;
+  /** Posições da câmera ao longo do corte. Exigido no modo keyframe. */
+  camera_keyframes?: CameraKeyframe[] | null;
+  /** Fecha o enquadramento: 1 = a maior janela que cabe. Constante no corte. */
+  zoom?: number;
   burn_subtitles: boolean;
   subtitle_style?: SubtitleStyle;
 }

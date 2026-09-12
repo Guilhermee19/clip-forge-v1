@@ -32,11 +32,16 @@ PlayResY: {height}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},{size},{primary},{primary},{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{border},{shadow},2,{margin_h},{margin_h},{margin_v},1
+Style: Default,{font},{size},{primary},{primary},{outline},{back},-1,0,0,0,100,100,0,0,{border_style},{border},{shadow},{alignment},{margin_h},{margin_h},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+
+# Os "tipos" de legenda oferecidos na interface. Cada um e um conjunto de
+# decisoes de estilo, nao um tema solto: o que muda e como a palavra falada se
+# destaca e o que fica atras do texto.
+PRESETS = ("karaoke", "word", "block", "clean")
 
 
 def _timestamp(seconds: float) -> str:
@@ -111,6 +116,19 @@ def hex_to_ass(color: str, fallback: str) -> str:
     return f"&H00{blue:02X}{green:02X}{red:02X}"
 
 
+def _preset_shape(preset: str, font_size: int) -> dict[str, object]:
+    """Traduz o preset nos campos de estilo do cabecalho ASS."""
+    thin = max(3, font_size // 16)
+
+    if preset == "block":
+        # BorderStyle 3 troca o contorno por uma caixa opaca atras do texto; o
+        # `border` passa a ser o respiro entre a letra e a borda da caixa.
+        return {"border_style": 3, "border": max(6, font_size // 8), "back": "&H00000000"}
+    if preset == "clean":
+        return {"border_style": 1, "border": max(5, font_size // 10), "back": "&H80000000"}
+    return {"border_style": 1, "border": thin, "back": "&H80000000"}
+
+
 def build_ass(
     words: list[Word],
     *,
@@ -123,6 +141,9 @@ def build_ass(
     primary_color: str | None = None,
     highlight_color: str | None = None,
     font: str | None = None,
+    preset: str = "karaoke",
+    pos_x: float | None = None,
+    pos_y: float | None = None,
 ) -> str:
     """Monta o conteudo de um arquivo `.ass` com destaque palavra-a-palavra.
 
@@ -133,9 +154,15 @@ def build_ass(
         width / height: resolucao de saida (padrao: a do `.env`).
         max_words: palavras por cartao (padrao: a do `.env`).
         font_size: corpo da fonte em pixels da resolucao de saida.
-        margin_v: distancia da legenda ate a base, em pixels.
+        margin_v: distancia da legenda ate a base, em pixels. Ignorado quando
+            `pos_x`/`pos_y` sao informados.
         primary_color / highlight_color: cores no formato ASS (`&H00BBGGRR`).
         font: nome da familia tipografica instalada no sistema.
+        preset: `karaoke` (palavra falada colorida), `word` (uma palavra por
+            vez), `block` (caixa opaca atras do texto) ou `clean` (sem destaque
+            de cor, so contorno grosso).
+        pos_x / pos_y: centro do texto em fracoes da saida (0-1). Quando
+            informados, a legenda e ancorada ali em vez de seguir a margem.
 
     Returns:
         O texto completo do arquivo ASS.
@@ -147,6 +174,21 @@ def build_ass(
     primary_color = primary_color or settings.subtitle_primary_color
     highlight_color = highlight_color or settings.subtitle_highlight_color
     font = font or settings.subtitle_font
+    preset = preset if preset in PRESETS else "karaoke"
+
+    # Uma palavra por vez e so um cartao de tamanho 1: o resto do desenho e
+    # identico, entao nao precisa de um caminho separado.
+    if preset == "word":
+        max_words = 1
+
+    shape = _preset_shape(preset, font_size)
+    highlight_border = int(shape["border"]) + 1
+
+    # Ancorar no centro e mais previsivel para posicionar a mao do que mexer na
+    # margem com o texto preso a base.
+    anchor = ""
+    if pos_x is not None and pos_y is not None:
+        anchor = "{" + rf"\an5\pos({int(pos_x * width)},{int(pos_y * height)})" + "}"
 
     lines = [
         _HEADER.format(
@@ -156,14 +198,13 @@ def build_ass(
             size=font_size,
             primary=primary_color,
             outline=settings.subtitle_outline_color,
-            border=max(3, font_size // 16),
-            shadow=2,
+            shadow=0 if preset == "block" else 2,
+            alignment=5 if anchor else 2,
             margin_h=int(width * 0.08),
             margin_v=margin_v,
+            **shape,
         )
     ]
-
-    highlight = highlight_color
 
     for group in group_words(words, max_words=max_words):
         if not group:
@@ -184,12 +225,14 @@ def build_ass(
             rendered: list[str] = []
             for index, word in enumerate(group):
                 text = _escape(word.text)
-                if index == position:
+                # No `clean` nada se destaca: a leitura vem do contorno grosso,
+                # sem a piscada de cor que nem todo canal quer.
+                if index == position and preset != "clean":
                     # Palavra atual: cor de destaque + um "pop" de escala.
                     rendered.append(
-                        rf"{{\c{highlight}\fscx112\fscy112\bord{max(4, font_size // 14)}}}"
+                        rf"{{\c{highlight_color}\fscx112\fscy112\bord{highlight_border}}}"
                         rf"{text}"
-                        rf"{{\c{primary_color}\fscx100\fscy100\bord{max(3, font_size // 16)}}}"
+                        rf"{{\c{primary_color}\fscx100\fscy100\bord{shape['border']}}}"
                     )
                 else:
                     rendered.append(text)
@@ -198,7 +241,7 @@ def build_ass(
             # Fade de 60 ms nas bordas evita o "piscar" entre cartoes.
             lines.append(
                 f"Dialogue: 0,{_timestamp(start)},{_timestamp(end)},Default,,0,0,0,,"
-                rf"{{\fad(60,60)}}{body}"
+                rf"{anchor}{{\fad(60,60)}}{body}"
             )
 
     return "\n".join(lines) + "\n"

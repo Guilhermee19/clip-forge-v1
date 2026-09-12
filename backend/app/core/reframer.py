@@ -452,6 +452,8 @@ def build_plan(
     aspect_ratio: float | None = None,
     manual_offset: float | None = None,
     regions: list[LayoutRegion] | None = None,
+    camera_keys: list[tuple[float, float, float, bool]] | None = None,
+    zoom: float = 1.0,
     on_progress: ProgressFn | None = None,
 ) -> ReframePlan:
     """Monta o plano de reenquadramento de um trecho do video.
@@ -466,6 +468,13 @@ def build_plan(
             roda a deteccao de rosto — o usuario ja disse onde quer a camera.
         regions: faixas do layout composto (gameplay + webcam), de cima para
             baixo. So valem no modo `composite`.
+        camera_keys: posicoes da camera ao longo do tempo, como
+            `(t, centro_x, centro_y, corte_seco)`. `t` e relativo ao inicio do
+            corte; o centro vai de 0 a 1 no frame de origem. So vale no modo
+            `keyframe`, e tambem dispensa a deteccao de rosto.
+        zoom: fecha a janela de crop (1.0 = a maior que cabe; 2.0 = metade da
+            largura). Constante no corte inteiro — o FFmpeg exige tamanho de
+            saida fixo, entao so a posicao pode variar no tempo.
         on_progress: callback `(fracao, mensagem)`.
 
     Returns:
@@ -483,6 +492,16 @@ def build_plan(
 
         info = ffmpeg_utils.probe(video_path)
         return _composite_plan(info.width, info.height, regions)
+
+    # Camera movida a mao tambem dispensa MediaPipe: o usuario ja disse onde a
+    # janela fica em cada instante.
+    if mode == "keyframe":
+        if not camera_keys:
+            raise ValueError("O modo 'keyframe' exige ao menos uma posicao de camera.")
+        from app.utils import ffmpeg as ffmpeg_utils
+
+        info = ffmpeg_utils.probe(video_path)
+        return _keyframe_plan(info.width, info.height, target_ratio, camera_keys, zoom)
 
     # Enquadramento manual dispensa MediaPipe: e uma janela fixa.
     if manual_offset is not None or mode == "manual":
@@ -732,6 +751,56 @@ def _manual_plan(
         crop_width=crop_w,
         crop_height=crop_h,
         keyframes=[CropKeyframe(t=0.0, x=x, y=(source_h - crop_h) / 2)],
+        faces_detected=0,
+    )
+
+
+def _keyframe_plan(
+    source_w: int,
+    source_h: int,
+    target_ratio: float,
+    keys: list[tuple[float, float, float, bool]],
+    zoom: float,
+) -> ReframePlan:
+    """Janela movida a mao: uma posicao por instante marcado na interface.
+
+    O `zoom` vale para o corte inteiro porque o FFmpeg exige que o `crop` tenha
+    tamanho constante — o que varia no tempo e so onde a janela esta.
+    """
+    zoom = float(np.clip(zoom, 1.0, 4.0))
+    base_w, base_h = _crop_size(source_w, source_h, target_ratio)
+    crop_w = _even(min(base_w, base_w / zoom))
+    crop_h = _even(min(source_h, crop_w / target_ratio))
+
+    max_x = max(source_w - crop_w, 0)
+    max_y = max(source_h - crop_h, 0)
+
+    frames: list[CropKeyframe] = []
+    for t, center_x, center_y, hold in sorted(keys, key=lambda k: k[0]):
+        frames.append(
+            CropKeyframe(
+                t=max(0.0, float(t)),
+                # O usuario aponta o centro do enquadramento; o crop quer o
+                # canto superior esquerdo.
+                x=float(np.clip(float(center_x) * source_w - crop_w / 2, 0, max_x)),
+                y=float(np.clip(float(center_y) * source_h - crop_h / 2, 0, max_y)),
+                hold=bool(hold),
+            )
+        )
+
+    # Sem um ponto em t=0, o FFmpeg extrapolaria o primeiro trecho para tras e a
+    # camera comecaria fora do lugar marcado.
+    if frames[0].t > 0.0:
+        first = frames[0]
+        frames.insert(0, CropKeyframe(t=0.0, x=first.x, y=first.y, hold=True))
+
+    return ReframePlan(
+        mode=ReframeMode.KEYFRAME,
+        source_width=source_w,
+        source_height=source_h,
+        crop_width=crop_w,
+        crop_height=crop_h,
+        keyframes=frames,
         faces_detected=0,
     )
 

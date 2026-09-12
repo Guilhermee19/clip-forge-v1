@@ -82,6 +82,10 @@ class Project:
         data["candidate_count"] = len(self.candidates)
         return data
 
+    @property
+    def cover_path(self) -> Path:
+        return self.directory / "cover.jpg"
+
     def summary(self) -> dict[str, Any]:
         """Versao leve para a listagem: sem transcricao nem lista de trechos."""
         thumbnail = self.clips[0].get("thumbnail_path") if self.clips else None
@@ -97,7 +101,15 @@ class Project:
             "candidate_count": len(self.candidates),
             "has_source": self.has_source,
             "duration": (self.media or {}).get("duration", 0.0),
-            "thumbnail_url": media_url(self.id, thumbnail) if thumbnail else None,
+            # A capa do video identifica o projeto melhor que um frame de um
+            # corte qualquer; o corte so entra se a capa nao existir.
+            "thumbnail_url": (
+                f"/media/{self.id}/cover.jpg"
+                if self.cover_path.is_file()
+                else media_url(self.id, thumbnail)
+                if thumbnail
+                else None
+            ),
             "last_error": self.last_error,
         }
 
@@ -272,6 +284,64 @@ def remove_clip(project_id: str, clip_id: str, *, remove_file: bool = True) -> b
         project.clips = [c for c in project.clips if c.get("id") != clip_id]
         save(project)
         return True
+
+
+def save_cover(project_id: str, video_path: str | Path) -> Path | None:
+    """Grava a capa do projeto: a do proprio video, ou um frame como reserva.
+
+    Returns:
+        O caminho da capa, ou `None` se nem o frame deu certo.
+    """
+    from app.core import ingest
+    from app.utils import ffmpeg
+
+    project = load(project_id)
+    if project is None:
+        return None
+
+    project.directory.mkdir(parents=True, exist_ok=True)
+    destination = project.cover_path
+
+    original = ingest.find_cover(video_path)
+    if original is not None:
+        try:
+            # Passa pelo ffmpeg em vez de copiar: o yt-dlp entrega webp com
+            # frequencia, e o navegador de alguns usuarios nao abre.
+            ffmpeg.run(
+                ["-i", str(original), "-frames:v", "1", "-q:v", "3", str(destination)],
+                description="capa do projeto",
+            )
+            return destination
+        except Exception as exc:
+            logger.debug("Capa original ilegivel (%s); caindo para um frame.", exc)
+
+    try:
+        duration = (project.media or {}).get("duration", 0.0)
+        ffmpeg.grab_thumbnail(
+            video_path, destination, timestamp=max(1.0, duration * 0.1), width=720
+        )
+        return destination
+    except Exception as exc:
+        logger.warning("Nao consegui gerar a capa de %s: %s", project_id, exc)
+        return None
+
+
+def backfill_covers() -> int:
+    """Gera a capa dos projetos anteriores a este recurso.
+
+    So mexe em quem ainda tem o video de origem no disco; os outros continuam
+    caindo na miniatura do primeiro corte.
+
+    Returns:
+        Quantas capas foram criadas.
+    """
+    created = 0
+    for project in list_all():
+        if project.cover_path.is_file() or not project.has_source:
+            continue
+        if save_cover(project.id, (project.media or {})["path"]) is not None:
+            created += 1
+    return created
 
 
 def clip_output_path(project: Project, title: str, clip_id: str) -> Path:

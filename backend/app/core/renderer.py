@@ -33,32 +33,50 @@ ProgressFn = Callable[[float, str], None]
 # ---------------------------------------------------------------------------
 
 
-def build_crop_expression(keyframes: list[CropKeyframe], *, fallback: float = 0.0) -> str:
+def build_crop_expression(
+    keyframes: list[CropKeyframe], *, axis: str = "x", fallback: float = 0.0
+) -> str:
     """Converte keyframes numa expressao de `t` para o filtro `crop` do FFmpeg.
 
-    A saida e uma cadeia de `if(lt(t,T), <interpolacao linear>, <resto>)`. Com a
-    simplificacao feita no reframer, sobram algumas dezenas de termos — bem
+    A saida e uma cadeia de `if(lt(t,T), <trecho>, <resto>)`. Cada trecho e uma
+    interpolacao linear, ou uma constante quando o keyframe seguinte pede corte
+    seco (`hold`) — e assim que a camera "pula" de um ponto do frame para outro
+    em vez de deslizar ate la.
+
+    Com a simplificacao feita no reframer sobram algumas dezenas de termos, bem
     dentro do que o parser de expressoes do FFmpeg aguenta.
 
     Args:
         keyframes: pontos ordenados por tempo, com `t` relativo ao inicio do corte.
+        axis: `x` ou `y` — qual coordenada da janela animar.
         fallback: valor usado quando nao ha keyframe algum.
 
     Returns:
         Uma expressao pronta para `crop=x='...'`.
     """
-    if not keyframes:
+    values = [getattr(k, axis) for k in keyframes]
+
+    if not values:
         return f"{fallback:.1f}"
-    if len(keyframes) == 1:
-        return f"{keyframes[0].x:.1f}"
+
+    # Eixo parado (o caso comum do `y`): uma constante poupa o parser de
+    # avaliar uma arvore de `if` a cada frame, para nada.
+    if all(abs(v - values[0]) < 0.5 for v in values):
+        return f"{values[0]:.1f}"
 
     # Constroi de tras para frente: o "senao" de cada nivel e o nivel seguinte.
-    expression = f"{keyframes[-1].x:.1f}"
+    expression = f"{values[-1]:.1f}"
 
-    for current, following in zip(reversed(keyframes[:-1]), reversed(keyframes[1:]), strict=True):
-        span = max(following.t - current.t, 1e-3)
-        slope = (following.x - current.x) / span
-        segment = f"({current.x:.1f}+{slope:.4f}*(t-{current.t:.3f}))"
+    for index in range(len(keyframes) - 2, -1, -1):
+        current, following = keyframes[index], keyframes[index + 1]
+
+        if following.hold:
+            segment = f"{values[index]:.1f}"
+        else:
+            span = max(following.t - current.t, 1e-3)
+            slope = (values[index + 1] - values[index]) / span
+            segment = f"({values[index]:.1f}+{slope:.4f}*(t-{current.t:.3f}))"
+
         expression = f"if(lt(t,{following.t:.3f}),{segment},{expression})"
 
     return expression
@@ -128,23 +146,23 @@ def build_filter_complex(
     elif plan.mode is ReframeMode.SPLIT:
         top = build_crop_expression(plan.keyframes)
         bottom = build_crop_expression(plan.keyframes_secondary)
-        y = plan.keyframes[0].y if plan.keyframes else 0.0
+        y = build_crop_expression(plan.keyframes, axis="y")
         panel_h = out_h // 2
 
         chain = (
             f"[0:v]split=2[src_top][src_bottom];"
-            f"[src_top]crop={plan.crop_width}:{plan.crop_height}:x='{top}':y={y:.1f},"
+            f"[src_top]crop={plan.crop_width}:{plan.crop_height}:x='{top}':y='{y}',"
             f"scale={out_w}:{panel_h}:{scale_flags},setsar=1[panel_top];"
-            f"[src_bottom]crop={plan.crop_width}:{plan.crop_height}:x='{bottom}':y={y:.1f},"
+            f"[src_bottom]crop={plan.crop_width}:{plan.crop_height}:x='{bottom}':y='{y}',"
             f"scale={out_w}:{panel_h}:{scale_flags},setsar=1[panel_bottom];"
             f"[panel_top][panel_bottom]vstack=inputs=2[stacked];"
             f"[stacked]fps={fps},format=yuv420p"
         )
     else:
         x = build_crop_expression(plan.keyframes)
-        y = plan.keyframes[0].y if plan.keyframes else 0.0
+        y = build_crop_expression(plan.keyframes, axis="y")
         chain = (
-            f"[0:v]crop={plan.crop_width}:{plan.crop_height}:x='{x}':y={y:.1f},"
+            f"[0:v]crop={plan.crop_width}:{plan.crop_height}:x='{x}':y='{y}',"
             f"scale={out_w}:{out_h}:{scale_flags},setsar=1,"
             f"fps={fps},format=yuv420p"
         )

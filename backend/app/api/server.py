@@ -88,6 +88,11 @@ async def lifespan(app: FastAPI):
     if migrated:
         logger.info("%d projeto(s) importados do formato antigo.", migrated)
 
+    # Projetos anteriores a capa nao tem uma; gera agora, uma vez.
+    covers = projects.backfill_covers()
+    if covers:
+        logger.info("%d capa(s) de projeto geradas.", covers)
+
     logger.info("ClipForge %s pronto em http://%s:%s", __version__, settings.api_host, settings.api_port)
     yield
 
@@ -488,6 +493,10 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
         raise HTTPException(status_code=400, detail="O fim do corte precisa vir depois do inicio.")
     if payload.reframe_mode == "composite" and not payload.regions:
         raise HTTPException(status_code=400, detail="O layout composto exige ao menos uma faixa.")
+    if payload.reframe_mode == "keyframe" and not payload.camera_keyframes:
+        raise HTTPException(
+            status_code=400, detail="A camera manual exige ao menos uma posicao marcada."
+        )
 
     regions = (
         [
@@ -497,6 +506,12 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
             for r in payload.regions
         ]
         if payload.regions
+        else None
+    )
+
+    camera_keys = (
+        [(k.t, k.x, k.y, k.hold) for k in payload.camera_keyframes]
+        if payload.camera_keyframes
         else None
     )
 
@@ -516,6 +531,9 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
             "font_size": s.font_size,
             "margin_v": s.margin_v,
             "max_words": s.max_words,
+            "preset": s.preset,
+            "pos_x": s.pos_x,
+            "pos_y": s.pos_y,
             "primary_color": subtitles.hex_to_ass(s.primary_color, settings.subtitle_primary_color),
             "highlight_color": subtitles.hex_to_ass(
                 s.highlight_color, settings.subtitle_highlight_color
@@ -555,6 +573,8 @@ def render_clip(project_id: str, payload: RenderRequest) -> RenderResponse:
                 aspect_ratio=aspect.ratio,
                 manual_offset=payload.manual_offset,
                 regions=regions,
+                camera_keys=camera_keys,
+                zoom=payload.zoom,
             )
             clip = renderer.render_clip(
                 media_path,

@@ -19,10 +19,15 @@ export function JobDock() {
 
   const done = job?.status === "completed";
 
-  // Quando a análise termina, o log deixa de interessar: fecha sozinho.
+  // Terminou: o log deixa de interessar e o card sai da frente sozinho. Uma
+  // pausa curta antes de sumir dá tempo de ver o resultado e de clicar em
+  // "abrir projeto"; falhas ficam até serem dispensadas à mão.
   useEffect(() => {
-    if (done) setOpen(false);
-  }, [done]);
+    if (!done) return;
+    setOpen(false);
+    const timer = window.setTimeout(dismissJob, 5000);
+    return () => window.clearTimeout(timer);
+  }, [done, dismissJob]);
 
   if (!job) return null;
 

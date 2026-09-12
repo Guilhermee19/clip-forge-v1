@@ -163,6 +163,7 @@ def run(
         media=media.to_dict(),
         source_url=media.source_url,
     )
+    projects.save_cover(project.id, media.path)
     reporter.finish_stage("ingest")
 
     # -------------------------------------------------------- 2. transcricao

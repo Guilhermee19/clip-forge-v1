@@ -1,10 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
-import { LivePreview } from "./LivePreview";
-import { RegionPicker } from "./RegionPicker";
-import { api } from "../lib/api";
-import { clock } from "../lib/format";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Pause, Play, Sparkles, Volume2, VolumeX, Wand2, X } from "lucide-react";
+import { CameraTimeline } from "@/components/CameraTimeline";
+import { FramePicker } from "@/components/FramePicker";
+import { LivePreview } from "@/components/LivePreview";
+import { RegionPicker } from "@/components/RegionPicker";
+import { Button } from "@/components/ui/Button";
+import { Chip } from "@/components/ui/Chip";
+import { api } from "@/lib/api";
+import {
+  bandRatio,
+  clamp,
+  cropWindow,
+  defaultKeyframes,
+  fitBands,
+  sampleCamera,
+} from "@/lib/camera";
+import { cn } from "@/lib/cn";
+import { clock } from "@/lib/format";
 import type {
   AspectRatio,
+  CameraKeyframe,
   ClipCandidate,
   FormatOption,
   LayoutRegion,
@@ -12,9 +27,10 @@ import type {
   MediaInfo,
   ReframeMode,
   RenderedClip,
+  SubtitlePreset,
   SubtitleStyle,
   Word,
-} from "../lib/types";
+} from "@/lib/types";
 
 interface Props {
   projectId: string;
@@ -25,19 +41,20 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "layout" | "captions";
+type Tab = "frame" | "trim" | "captions";
 
-const REFRAME_OPTIONS: { value: ReframeMode; label: string; hint: string }[] = [
+const TABS: [Tab, string][] = [
+  ["frame", "Enquadramento"],
+  ["trim", "Corte e formato"],
+  ["captions", "Legendas"],
+];
+
+/** Modos de painel único que a análise decide sozinha. */
+const AUTO_MODES: { value: ReframeMode; label: string; hint: string }[] = [
   { value: "auto", label: "Automático", hint: "Detecta rostos e decide sozinho" },
   { value: "single", label: "Seguir o falante", hint: "Uma câmera acompanha quem fala" },
   { value: "split", label: "Split-screen", hint: "Duas pessoas empilhadas" },
   { value: "center", label: "Centro fixo", hint: "Sem detecção de rosto" },
-  { value: "manual", label: "Posição manual", hint: "Você escolhe onde a câmera fica" },
-  {
-    value: "composite",
-    label: "Gameplay + webcam",
-    hint: "Empilha duas áreas da tela; arraste os retângulos no vídeo original",
-  },
 ];
 
 const DEFAULT_REGIONS: LayoutRegion[] = [
@@ -45,8 +62,18 @@ const DEFAULT_REGIONS: LayoutRegion[] = [
   { x: 0.62, y: 0.55, width: 0.34, height: 0.4, weight: 0.38, label: "Webcam" },
 ];
 
+const SUBTITLE_PRESETS: { value: SubtitlePreset; label: string; hint: string }[] = [
+  { value: "karaoke", label: "Karaokê", hint: "Frase na tela, palavra falada em cor" },
+  { value: "word", label: "Uma palavra", hint: "Uma de cada vez, bem grande" },
+  { value: "block", label: "Caixa", hint: "Fundo sólido atrás do texto" },
+  { value: "clean", label: "Sem destaque", hint: "Só contorno grosso, sem cor" },
+];
+
 const DEFAULT_STYLE: SubtitleStyle = {
   font_size: 84,
+  preset: "karaoke",
+  pos_x: null,
+  pos_y: null,
   margin_v: 420,
   primary_color: "#FFFFFF",
   highlight_color: "#FFE500",
@@ -58,8 +85,8 @@ const PALETTE = ["#FFE500", "#2DD4BF", "#F472B6", "#FB923C", "#A78BFA", "#FFFFFF
 /**
  * Editor de um corte: original de um lado, resultado ao vivo do outro.
  *
- * O painel da esquerda é o vídeo 16:9 com os controles de enquadramento; o da
- * direita é um canvas que redesenha a composição a cada frame, com a mesma
+ * O painel da esquerda é o vídeo 16:9 com o retângulo do enquadramento; o do
+ * meio é um canvas que redesenha a composição a cada frame, com a mesma
  * matemática de recorte que o FFmpeg vai usar. Nenhum arquivo é gerado até
  * clicar em salvar, então experimentar é instantâneo.
  */
@@ -67,17 +94,18 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
   // Um único estado guarda o elemento: serve de "ref" para os comandos de
   // playback e dispara o render quando o player aparece, para a prévia começar.
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
-  const videoRef = { get current() { return videoEl; } };
 
-  const [tab, setTab] = useState<Tab>("layout");
+  const [tab, setTab] = useState<Tab>("frame");
   const [start, setStart] = useState(candidate.start_time);
   const [end, setEnd] = useState(candidate.end_time);
   const [title, setTitle] = useState(candidate.title);
   const [selected, setSelected] = useState<AspectRatio[]>(["9:16"]);
   const [reframe, setReframe] = useState<ReframeMode>("auto");
-  const [offset, setOffset] = useState(0.5);
   const [regions, setRegions] = useState<LayoutRegion[]>(DEFAULT_REGIONS);
   const [activeRegion, setActiveRegion] = useState(0);
+  const [keyframes, setKeyframes] = useState<CameraKeyframe[]>(defaultKeyframes);
+  const [activeKey, setActiveKey] = useState(0);
+  const [zoom, setZoom] = useState(1);
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [style, setStyle] = useState<SubtitleStyle>(DEFAULT_STYLE);
   const [words, setWords] = useState<Word[]>([]);
@@ -87,15 +115,32 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [playhead, setPlayhead] = useState(candidate.start_time);
+  const [volume, setVolume] = useState(0.8);
+  const [muted, setMuted] = useState(false);
 
   const duration = Math.max(0, end - start);
   const previewAspect = selected[0] ?? "9:16";
   const composing = reframe === "composite";
+  const keyframing = reframe === "keyframe";
 
   const format = formats.find((f) => f.value === previewAspect);
   const targetRatio = format ? format.width / format.height : 9 / 16;
-  const cropFraction = Math.min(1, targetRatio / (media.width / media.height));
-  const travel = 1 - cropFraction;
+
+  const baseWindow = useMemo(
+    () => cropWindow(media.width, media.height, targetRatio, 1),
+    [media.width, media.height, targetRatio],
+  );
+  const window_ = useMemo(
+    () => cropWindow(media.width, media.height, targetRatio, zoom),
+    [media.width, media.height, targetRatio, zoom],
+  );
+
+  // Onde o retângulo aparece agora. Nos modos automáticos não sabemos a
+  // trajetória que o backend vai calcular, então mostramos o centro — assim
+  // que a pessoa arrasta, o modo vira manual e a posição passa a ser dela.
+  const center = keyframing
+    ? sampleCamera(keyframes, playhead - start)
+    : { x: 0.5, y: 0.5 };
 
   // ------------------------------------------------------------ dados
 
@@ -121,6 +166,13 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A marcação de cada faixa só vale se tiver a proporção da faixa final, e
+  // isso muda quando o formato de saída muda.
+  useEffect(() => {
+    if (!composing) return;
+    setRegions((previous) => fitBands(previous, media.width, media.height, targetRatio));
+  }, [composing, targetRatio, media.width, media.height]);
+
   // As palavras alimentam a legenda desenhada na prévia.
   useEffect(() => {
     api
@@ -129,34 +181,94 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
       .catch(() => setWords([]));
   }, [projectId, start, end]);
 
+  // Fechar com Esc: o editor ocupa a tela toda, o X nem sempre está à mão.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    globalThis.addEventListener("keydown", onKey);
+    return () => globalThis.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   // ----------------------------------------------------------- player
 
   const enforceRange = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.currentTime < start - 0.3 || video.currentTime > end) {
-      video.currentTime = start;
+    if (!videoEl) return;
+    if (videoEl.currentTime < start - 0.3 || videoEl.currentTime > end) {
+      videoEl.currentTime = start;
     }
-    setPlayhead(video.currentTime);
-  }, [start, end]);
+    setPlayhead(videoEl.currentTime);
+  }, [videoEl, start, end]);
 
-  const seekTo = (time: number) => {
-    const video = videoRef.current;
-    if (video) video.currentTime = time;
-  };
+  const seekTo = useCallback(
+    (time: number) => {
+      if (videoEl) videoEl.currentTime = time;
+      setPlayhead(time);
+    },
+    [videoEl],
+  );
+
+  // O elemento nasce sem áudio; o volume vem do controle, não do atributo.
+  useEffect(() => {
+    if (!videoEl) return;
+    videoEl.volume = volume;
+    videoEl.muted = muted;
+  }, [videoEl, volume, muted]);
 
   const togglePlay = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      if (video.currentTime < start || video.currentTime > end) video.currentTime = start;
-      video.play();
+    if (!videoEl) return;
+    if (videoEl.paused) {
+      if (videoEl.currentTime < start || videoEl.currentTime > end) videoEl.currentTime = start;
+      videoEl.play();
     } else {
-      video.pause();
+      videoEl.pause();
     }
   };
 
   // ------------------------------------------------------------ ações
+
+  /**
+   * Arrastar o retângulo é o gesto que liga a câmera manual: nos modos
+   * automáticos a primeira posição vira o keyframe inicial, e dali em diante
+   * quem manda é a timeline.
+   */
+  const moveCamera = (next: { x: number; y: number }) => {
+    const relative = clamp(playhead - start, 0, duration);
+
+    if (!keyframing) {
+      setReframe("keyframe");
+      setKeyframes([{ t: 0, x: next.x, y: next.y, hold: true }]);
+      setActiveKey(0);
+      return;
+    }
+
+    const sorted = [...keyframes].sort((a, b) => a.t - b.t);
+    const index = sorted.findIndex((key) => Math.abs(key.t - relative) < 0.25);
+
+    if (index === -1) {
+      // Sem marca neste instante, move a que estiver em edição: evita criar
+      // keyframe sem querer só por encostar no retângulo.
+      const target = Math.min(activeKey, sorted.length - 1);
+      setKeyframes(sorted.map((key, i) => (i === target ? { ...key, ...next } : key)));
+      return;
+    }
+
+    setActiveKey(index);
+    setKeyframes(sorted.map((key, i) => (i === index ? { ...key, ...next } : key)));
+  };
+
+  /** Mudar a divisão muda a forma da faixa, então a marcação acompanha. */
+  const setSplitWeight = (top: number) => {
+    setRegions((previous) => {
+      const [first, second, ...rest] = previous;
+      return fitBands(
+        [{ ...first, weight: top }, { ...second, weight: 1 - top }, ...rest],
+        media.width,
+        media.height,
+        targetRatio,
+      );
+    });
+  };
 
   const toggleFormat = (value: AspectRatio) => {
     setSelected((previous) => {
@@ -164,15 +276,6 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
       const rest = previous.filter((v) => v !== value);
       return rest.length > 0 ? rest : previous;
     });
-  };
-
-  const applyPreset = (count: 1 | 2) => {
-    if (count === 1) {
-      setReframe(suggestion?.mode === "composite" ? "center" : suggestion?.mode ?? "auto");
-    } else {
-      setReframe("composite");
-      if (regions.length < 2) setRegions(DEFAULT_REGIONS);
-    }
   };
 
   const submit = async () => {
@@ -185,8 +288,10 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
         title,
         aspect_ratios: selected,
         reframe_mode: reframe,
-        manual_offset: reframe === "manual" ? offset : null,
+        manual_offset: null,
         regions: composing ? regions : null,
+        camera_keyframes: keyframing ? keyframes : null,
+        zoom: keyframing ? zoom : 1,
         burn_subtitles: burnSubtitles,
         subtitle_style: style,
       });
@@ -198,62 +303,79 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
     }
   };
 
-  const shift = (setter: (value: number) => void, current: number, delta: number) =>
-    setter(Math.max(0, Math.min(media.duration, current + delta)));
-
   // ------------------------------------------------------------- view
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-950/95 p-4 backdrop-blur-sm">
-      <div className="my-4 w-full max-w-6xl space-y-4 rounded-xl border border-ink-700 bg-ink-900 p-5">
-        {/* --------------------------------------------------- abas */}
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-700 pb-3">
-          <nav className="flex gap-1">
-            {(
-              [
-                ["layout", "Layout e formato"],
-                ["captions", "Legendas"],
-              ] as [Tab, string][]
-            ).map(([value, label]) => (
+    <div className="fixed inset-0 z-50 bg-bg/95 p-2 backdrop-blur-sm sm:p-4">
+      <div className="hairline flex h-full flex-col overflow-hidden rounded-3xl border border-line bg-surface">
+        {/* --------------------------------------------------- cabeçalho */}
+        <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+          <input
+            className="min-w-48 flex-1 rounded-full border border-line bg-surface-2 px-4 py-2 text-[14px] font-semibold text-ink focus:border-accent focus:outline-none"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Título do corte"
+          />
+
+          <nav className="flex items-center gap-1 rounded-full bg-surface-2 p-1">
+            {TABS.map(([value, label]) => (
               <button
                 key={value}
                 onClick={() => setTab(value)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                className={cn(
+                  "h-8 cursor-pointer rounded-full px-3.5 text-[12px] font-medium transition-colors",
                   tab === value
-                    ? "bg-ink-800 text-brand-400"
-                    : "text-slate-400 hover:bg-ink-800/50 hover:text-slate-200"
-                }`}
+                    ? "bg-accent text-accent-ink"
+                    : "text-muted hover:bg-surface-3 hover:text-ink",
+                )}
               >
                 {label}
               </button>
             ))}
           </nav>
-          <input
-            className="field max-w-sm flex-1 text-sm font-semibold"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Título do corte"
-          />
+
+          <Button variant="ghost" size="icon" aria-label="Fechar editor" onClick={onClose}>
+            <X className="size-4" strokeWidth={2} />
+          </Button>
         </header>
 
-        {/* -------------------------------------- original + resultado */}
-        <div className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">
-          <div className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-              Original {media.width}×{media.height}
-            </p>
-            <div className="relative overflow-hidden rounded-lg bg-black">
-              <video
-                ref={setVideoEl}
-                className="w-full"
-                src={api.sourceUrl(projectId)}
-                muted
-                playsInline
-                onTimeUpdate={enforceRange}
-                onLoadedMetadata={() => seekTo(start)}
-                onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
-              />
+        {/* ------------------------------------------------------ corpo */}
+        {/* Abaixo de `lg` as três áreas empilham e a página rola; a partir daí
+            elas dividem a altura e cada uma rola por dentro. */}
+        <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-4 lg:grid-cols-[minmax(0,1fr)_minmax(210px,0.55fr)_300px] lg:overflow-hidden xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.6fr)_340px]">
+          {/* ------------------------------------ original + timeline */}
+          <section className="flex min-h-0 min-w-0 flex-col gap-3">
+            <div className="flex items-baseline justify-between">
+              <p className="text-[11px] font-medium tracking-wide text-faint uppercase">
+                Original {media.width}×{media.height}
+              </p>
+              {!composing && (
+                <p className="text-[11px] text-faint">
+                  arraste o retângulo para escolher o que aparece
+                </p>
+              )}
+            </div>
+
+            {/* A caixa tem a proporção exata do vídeo e é limitada pela
+                largura. Nada de `max-height` aqui: com a largura já definida,
+                limitar a altura achataria a caixa, o vídeo esticaria e o
+                retângulo de enquadramento passaria a apontar para o lugar
+                errado. */}
+            <div className="flex min-h-0 flex-1 items-start justify-center">
+              <div
+                className="relative w-full max-w-full overflow-hidden rounded-2xl bg-black"
+                style={{ aspectRatio: `${media.width} / ${media.height}` }}
+              >
+                <video
+                  ref={setVideoEl}
+                  className="size-full"
+                  src={api.sourceUrl(projectId)}
+                  playsInline
+                  onTimeUpdate={enforceRange}
+                  onLoadedMetadata={() => seekTo(start)}
+                  onPlay={() => setPlaying(true)}
+                  onPause={() => setPlaying(false)}
+                />
 
               {composing ? (
                 <RegionPicker
@@ -261,360 +383,217 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
                   onChange={setRegions}
                   active={activeRegion}
                   onSelect={setActiveRegion}
+                  ratioFor={(index) =>
+                    bandRatio(
+                      media.width,
+                      media.height,
+                      targetRatio,
+                      regions[index]?.weight ?? 0.5,
+                    )
+                  }
                 />
               ) : (
-                <div className="pointer-events-none absolute inset-0">
-                  <div
-                    className="absolute inset-y-0 left-0 bg-ink-950/70"
-                    style={{ width: `${cropLeft(reframe, offset, travel) * 100}%` }}
-                  />
-                  <div
-                    className="absolute inset-y-0 right-0 bg-ink-950/70"
-                    style={{
-                      width: `${(1 - cropLeft(reframe, offset, travel) - cropFraction) * 100}%`,
-                    }}
-                  />
-                  <div
-                    className="absolute inset-y-0 border-2 border-brand-500/80"
-                    style={{
-                      left: `${cropLeft(reframe, offset, travel) * 100}%`,
-                      width: `${cropFraction * 100}%`,
-                    }}
-                  />
-                </div>
+                <FramePicker
+                  window={window_}
+                  center={center}
+                  onMove={moveCamera}
+                  onZoom={(value) => {
+                    if (!keyframing) {
+                      setReframe("keyframe");
+                      setKeyframes([{ t: 0, x: center.x, y: center.y, hold: true }]);
+                      setActiveKey(0);
+                    }
+                    setZoom(value);
+                  }}
+                  zoom={zoom}
+                  baseWidth={baseWindow.width}
+                  editable
+                />
               )}
+              </div>
             </div>
 
-            {composing && (
-              <p className="text-xs text-slate-500">
-                Arraste os retângulos e use a alça do canto para redimensionar. A{" "}
-                <span className="text-brand-400">faixa 1</span> fica em cima,{" "}
-                <span className="text-amber-400">a 2</span> embaixo.
-              </p>
-            )}
-          </div>
+            {/* ----------------------------------------- transporte */}
+            <div className="flex shrink-0 items-center gap-3 rounded-2xl border border-line bg-surface-2 px-3 py-2">
+              <button
+                className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-accent text-accent-ink transition-colors hover:bg-accent-hover"
+                onClick={togglePlay}
+                aria-label={playing ? "Pausar" : "Reproduzir"}
+              >
+                {playing ? (
+                  <Pause className="size-4" strokeWidth={2.4} />
+                ) : (
+                  <Play className="size-4" strokeWidth={2.4} />
+                )}
+              </button>
+              <input
+                type="range"
+                min={start}
+                max={end}
+                step={0.05}
+                value={clamp(playhead, start, end)}
+                onChange={(event) => seekTo(Number(event.target.value))}
+                className="flex-1 accent-(--c-accent)"
+                aria-label="Posição no corte"
+              />
+              <span className="num w-24 shrink-0 text-right text-[12px] text-muted">
+                {clock(playhead - start)} / {clock(duration)}
+              </span>
 
-          <div className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  onClick={() => setMuted((value) => !value)}
+                  aria-label={muted ? "Ativar som" : "Silenciar"}
+                  className="flex size-8 cursor-pointer items-center justify-center rounded-full text-muted transition-colors hover:bg-surface-3 hover:text-ink"
+                >
+                  {muted || volume === 0 ? (
+                    <VolumeX className="size-4" strokeWidth={1.9} />
+                  ) : (
+                    <Volume2 className="size-4" strokeWidth={1.9} />
+                  )}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={muted ? 0 : volume}
+                  onChange={(event) => {
+                    setVolume(Number(event.target.value));
+                    setMuted(false);
+                  }}
+                  className="w-20 accent-(--c-accent)"
+                  aria-label="Volume"
+                />
+              </div>
+            </div>
+
+            {composing ? (
+              <BandList regions={regions} active={activeRegion} onSelect={setActiveRegion} />
+            ) : (
+              <CameraTimeline
+                keyframes={keyframing ? keyframes : defaultKeyframes()}
+                onChange={(next) => {
+                  if (!keyframing) setReframe("keyframe");
+                  setKeyframes(next);
+                }}
+                duration={duration}
+                playhead={clamp(playhead - start, 0, duration)}
+                onSeek={(relative) => seekTo(start + relative)}
+                active={activeKey}
+                onSelect={setActiveKey}
+              />
+            )}
+          </section>
+
+          {/* --------------------------------------------- resultado */}
+          <section className="flex min-h-0 min-w-0 flex-col gap-3">
+            <p className="text-[11px] font-medium tracking-wide text-faint uppercase">
               Resultado {previewAspect}
             </p>
-            <LivePreview
-              video={videoEl}
-              aspect={previewAspect}
-              mode={reframe}
-              regions={regions}
-              manualOffset={offset}
-              sourceWidth={media.width}
-              sourceHeight={media.height}
-              words={words}
-              subtitles={burnSubtitles}
-              style={style}
-              clipStart={start}
-            />
-          </div>
-        </div>
+            <div className="flex min-h-0 flex-1 items-start justify-center">
+              <LivePreview
+                video={videoEl}
+                aspect={previewAspect}
+                mode={reframe}
+                regions={regions}
+                manualOffset={0.5}
+                keyframes={keyframes}
+                zoom={zoom}
+                sourceWidth={media.width}
+                sourceHeight={media.height}
+                words={words}
+                subtitles={burnSubtitles}
+                style={style}
+                clipStart={start}
+                onMoveCaption={(position) =>
+                  setStyle((previous) => ({
+                    ...previous,
+                    pos_x: Number(position.x.toFixed(3)),
+                    pos_y: Number(position.y.toFixed(3)),
+                  }))
+                }
+              />
+            </div>
+          </section>
 
-        {/* ---------------------------------------------- transporte */}
-        <div className="flex items-center gap-3 rounded-lg border border-ink-700 bg-ink-800/40 px-3 py-2">
-          <button
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-ink-600 text-slate-200 hover:bg-ink-800"
-            onClick={togglePlay}
-            aria-label={playing ? "Pausar" : "Reproduzir"}
-          >
-            {playing ? "❚❚" : "▶"}
-          </button>
-          <input
-            type="range"
-            min={start}
-            max={end}
-            step={0.05}
-            value={Math.min(Math.max(playhead, start), end)}
-            onChange={(event) => seekTo(Number(event.target.value))}
-            className="flex-1 accent-brand-500"
-          />
-          <span className="w-24 shrink-0 text-right font-mono text-xs text-slate-400">
-            {clock(playhead - start)} / {clock(duration)}
-          </span>
-        </div>
+          {/* --------------------------------------------- controles */}
+          <aside className="scroll-thin flex min-h-0 min-w-0 flex-col gap-4 lg:overflow-y-auto">
+            {tab === "frame" && (
+              <FrameTab
+                reframe={reframe}
+                setReframe={setReframe}
+                composing={composing}
+                keyframing={keyframing}
+                regions={regions}
+                setRegions={setRegions}
+                onSplitWeight={setSplitWeight}
+                zoom={zoom}
+                setZoom={setZoom}
+                keyframes={keyframes}
+                setKeyframes={setKeyframes}
+                setActiveKey={setActiveKey}
+                center={center}
+                suggestion={suggestion}
+                suggesting={suggesting}
+                onReanalyse={askSuggestion}
+                defaultRegions={DEFAULT_REGIONS}
+              />
+            )}
 
-        {/* ------------------------------------------------ controles */}
-        {tab === "layout" ? (
-          <div className="grid gap-5 md:grid-cols-3">
-            {/* trim */}
-            <div className="space-y-3">
-              <TimeControl
-                label="Início"
-                value={start}
-                max={media.duration}
-                onChange={(value) => {
+            {tab === "trim" && (
+              <TrimTab
+                start={start}
+                end={end}
+                duration={duration}
+                mediaDuration={media.duration}
+                onStart={(value) => {
                   const next = Math.min(value, end - 1);
                   setStart(next);
                   seekTo(next);
                 }}
-                onNudge={(delta) =>
-                  shift(
-                    (v) => {
-                      setStart(v);
-                      seekTo(v);
-                    },
-                    start,
-                    delta
-                  )
-                }
+                onEnd={(value) => setEnd(Math.max(value, start + 1))}
+                formats={formats}
+                selected={selected}
+                onToggleFormat={toggleFormat}
+                suggested={suggestion?.aspect_ratio}
               />
-              <TimeControl
-                label="Fim"
-                value={end}
-                max={media.duration}
-                onChange={(value) => setEnd(Math.max(value, start + 1))}
-                onNudge={(delta) => shift(setEnd, end, delta)}
+            )}
+
+            {tab === "captions" && (
+              <CaptionsTab
+                burn={burnSubtitles}
+                setBurn={setBurnSubtitles}
+                style={style}
+                setStyle={setStyle}
+                wordCount={words.length}
               />
-              <p className="text-xs text-slate-500">
-                Duração{" "}
-                <span className={duration < 5 || duration > 180 ? "text-amber-400" : "text-slate-200"}>
-                  {duration.toFixed(1)}s
-                </span>
+            )}
+          </aside>
+        </div>
+
+        {/* ------------------------------------------------------ rodapé */}
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3">
+          <div className="min-w-0">
+            {error ? (
+              <p className="truncate text-[12px] text-rose">{error}</p>
+            ) : (
+              <p className="text-[12px] text-faint">
+                {selected.length} formato{selected.length > 1 ? "s" : ""} · só o trecho é
+                codificado
               </p>
-            </div>
-
-            {/* formatos */}
-            <div className="space-y-2">
-              <span className="label">Formatos a gerar</span>
-              <div className="grid grid-cols-2 gap-2">
-                {formats.map((option) => {
-                  const on = selected.includes(option.value);
-                  return (
-                    <button
-                      key={option.value}
-                      onClick={() => toggleFormat(option.value)}
-                      className={`relative rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                        on
-                          ? "border-brand-500 bg-brand-600/10 text-brand-400"
-                          : "border-ink-600 text-slate-400 hover:bg-ink-800"
-                      }`}
-                    >
-                      <span className="block font-semibold">{option.value}</span>
-                      <span className="block text-[11px] opacity-70">
-                        {option.width}×{option.height}
-                      </span>
-                      {suggestion?.aspect_ratio === option.value && (
-                        <span className="absolute right-1.5 top-1.5 text-[10px] text-brand-500">★</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-slate-500">
-                O primeiro marcado é o mostrado na prévia.
-              </p>
-            </div>
-
-            {/* enquadramento */}
-            <div className="space-y-3">
-              <div>
-                <span className="label">Layout</span>
-                <div className="mb-2 flex gap-2">
-                  <button
-                    onClick={() => applyPreset(1)}
-                    className={`flex-1 rounded-lg border px-2 py-1.5 text-xs ${
-                      composing
-                        ? "border-ink-600 text-slate-400 hover:bg-ink-800"
-                        : "border-brand-500 bg-brand-600/10 text-brand-400"
-                    }`}
-                  >
-                    1 painel
-                  </button>
-                  <button
-                    onClick={() => applyPreset(2)}
-                    className={`flex-1 rounded-lg border px-2 py-1.5 text-xs ${
-                      composing
-                        ? "border-brand-500 bg-brand-600/10 text-brand-400"
-                        : "border-ink-600 text-slate-400 hover:bg-ink-800"
-                    }`}
-                  >
-                    2 painéis
-                  </button>
-                </div>
-                <select
-                  className="field"
-                  value={reframe}
-                  onChange={(event) => setReframe(event.target.value as ReframeMode)}
-                >
-                  {REFRAME_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-slate-500">
-                  {REFRAME_OPTIONS.find((o) => o.value === reframe)?.hint}
-                </p>
-              </div>
-
-              {reframe === "manual" && travel > 0.001 && (
-                <Slider
-                  label="Posição horizontal"
-                  value={offset}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  onChange={setOffset}
-                  legend={["esquerda", "centro", "direita"]}
-                />
-              )}
-
-              {composing && (
-                <Slider
-                  label="Divisão da tela"
-                  value={regions[0]?.weight ?? 0.6}
-                  min={0.2}
-                  max={0.8}
-                  step={0.02}
-                  onChange={(top) =>
-                    setRegions(([first, second, ...rest]) => [
-                      { ...first, weight: top },
-                      { ...second, weight: 1 - top },
-                      ...rest,
-                    ])
-                  }
-                  legend={[
-                    `faixa 1: ${Math.round((regions[0]?.weight ?? 0.6) * 100)}%`,
-                    "",
-                    `faixa 2: ${Math.round((regions[1]?.weight ?? 0.4) * 100)}%`,
-                  ]}
-                />
-              )}
-
-              <div className="rounded-lg border border-ink-700 bg-ink-800/40 p-2.5">
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                    Recomendação
-                  </span>
-                  <button
-                    className="text-[11px] text-brand-500 hover:text-brand-400 disabled:opacity-50"
-                    onClick={askSuggestion}
-                    disabled={suggesting}
-                  >
-                    {suggesting ? "analisando..." : "reanalisar"}
-                  </button>
-                </div>
-                <p className="text-xs leading-relaxed text-slate-400">
-                  {suggestion ? suggestion.reason : suggesting ? "Detectando rostos..." : "—"}
-                </p>
-              </div>
-            </div>
+            )}
           </div>
-        ) : (
-          <div className="grid gap-5 md:grid-cols-3">
-            <div className="space-y-3">
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-ink-600 bg-ink-800 accent-brand-500"
-                  checked={burnSubtitles}
-                  onChange={(event) => setBurnSubtitles(event.target.checked)}
-                />
-                Queimar legenda no vídeo
-              </label>
-              <p className="text-xs text-slate-500">
-                {words.length} palavras neste trecho. As mudanças aparecem na prévia
-                imediatamente.
-              </p>
-            </div>
-
-            <div className="space-y-3">
-              <Slider
-                label={`Tamanho da fonte — ${style.font_size}px`}
-                value={style.font_size}
-                min={40}
-                max={140}
-                step={2}
-                disabled={!burnSubtitles}
-                onChange={(font_size) => setStyle((s) => ({ ...s, font_size }))}
-              />
-              <Slider
-                label={`Altura na tela — ${style.margin_v}px da base`}
-                value={style.margin_v}
-                min={80}
-                max={1200}
-                step={10}
-                disabled={!burnSubtitles}
-                onChange={(margin_v) => setStyle((s) => ({ ...s, margin_v }))}
-              />
-              <Slider
-                label={`Palavras por vez — ${style.max_words}`}
-                value={style.max_words}
-                min={1}
-                max={8}
-                step={1}
-                disabled={!burnSubtitles}
-                onChange={(max_words) => setStyle((s) => ({ ...s, max_words }))}
-              />
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <span className="label">Cor do destaque</span>
-                <div className="flex flex-wrap gap-2">
-                  {PALETTE.map((color) => (
-                    <button
-                      key={color}
-                      onClick={() => setStyle((s) => ({ ...s, highlight_color: color }))}
-                      disabled={!burnSubtitles}
-                      className={`h-8 w-8 rounded-full border-2 transition-transform disabled:opacity-40 ${
-                        style.highlight_color === color
-                          ? "scale-110 border-slate-100"
-                          : "border-ink-600"
-                      }`}
-                      style={{ backgroundColor: color }}
-                      aria-label={color}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div>
-                <span className="label">Cor do texto</span>
-                <div className="flex flex-wrap gap-2">
-                  {["#FFFFFF", "#E2E8F0", "#0F172A"].map((color) => (
-                    <button
-                      key={color}
-                      onClick={() => setStyle((s) => ({ ...s, primary_color: color }))}
-                      disabled={!burnSubtitles}
-                      className={`h-8 w-8 rounded-full border-2 transition-transform disabled:opacity-40 ${
-                        style.primary_color === color
-                          ? "scale-110 border-brand-500"
-                          : "border-ink-600"
-                      }`}
-                      style={{ backgroundColor: color }}
-                      aria-label={color}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <p className="rounded-lg border border-red-900/60 bg-red-950/30 p-3 text-sm text-red-300">
-            {error}
-          </p>
-        )}
-
-        {/* --------------------------------------------------- rodapé */}
-        <footer className="flex items-center justify-between gap-3 border-t border-ink-700 pt-3">
-          <p className="text-xs text-slate-500">
-            {selected.length} formato{selected.length > 1 ? "s" : ""} · só o trecho é codificado
-          </p>
           <div className="flex gap-2">
-            <button className="btn-ghost" onClick={onClose}>
+            <Button variant="outline" onClick={onClose}>
               Cancelar
-            </button>
-            <button className="btn-primary" onClick={submit} disabled={rendering || duration < 1}>
+            </Button>
+            <Button variant="accent" onClick={submit} disabled={rendering || duration < 1}>
+              <Sparkles className="size-4" strokeWidth={2.2} />
               {rendering
-                ? "Gerando..."
+                ? "Gerando…"
                 : `Gerar ${selected.length} vídeo${selected.length > 1 ? "s" : ""}`}
-            </button>
+            </Button>
           </div>
         </footer>
       </div>
@@ -622,68 +601,517 @@ export function ClipEditor({ projectId, candidate, media, formats, onRendered, o
   );
 }
 
-function cropLeft(mode: ReframeMode, offset: number, travel: number): number {
-  return mode === "manual" ? offset * travel : travel / 2;
-}
+// ---------------------------------------------------------------- abas
 
-interface SliderProps {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (value: number) => void;
-  legend?: [string, string, string];
-  disabled?: boolean;
-}
+function FrameTab({
+  reframe,
+  setReframe,
+  composing,
+  keyframing,
+  regions,
+  setRegions,
+  onSplitWeight,
+  zoom,
+  setZoom,
+  keyframes,
+  setKeyframes,
+  setActiveKey,
+  center,
+  suggestion,
+  suggesting,
+  onReanalyse,
+  defaultRegions,
+}: {
+  reframe: ReframeMode;
+  setReframe: (mode: ReframeMode) => void;
+  composing: boolean;
+  keyframing: boolean;
+  regions: LayoutRegion[];
+  setRegions: (regions: LayoutRegion[]) => void;
+  onSplitWeight: (top: number) => void;
+  zoom: number;
+  setZoom: (zoom: number) => void;
+  keyframes: CameraKeyframe[];
+  setKeyframes: (keyframes: CameraKeyframe[]) => void;
+  setActiveKey: (index: number) => void;
+  center: { x: number; y: number };
+  suggestion: LayoutSuggestion | null;
+  suggesting: boolean;
+  onReanalyse: () => void;
+  defaultRegions: LayoutRegion[];
+}) {
+  const layout = composing ? "duplo" : keyframing ? "manual" : "auto";
 
-function Slider({ label, value, min, max, step, onChange, legend, disabled }: SliderProps) {
   return (
-    <div>
-      <span className="label">{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        disabled={disabled}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="w-full accent-brand-500 disabled:opacity-40"
-      />
-      {legend && (
-        <div className="flex justify-between text-[11px] text-slate-500">
-          {legend.map((text, index) => (
-            <span key={index}>{text}</span>
+    <>
+      <Field label="Layout">
+        <div className="grid grid-cols-3 gap-1.5">
+          <LayoutButton
+            on={layout === "auto"}
+            label="Automático"
+            onClick={() => setReframe(suggestion?.mode === "composite" ? "center" : "auto")}
+          />
+          <LayoutButton
+            on={layout === "manual"}
+            label="Câmera manual"
+            onClick={() => {
+              setReframe("keyframe");
+              setKeyframes([{ t: 0, x: center.x, y: center.y, hold: true }]);
+              setActiveKey(0);
+            }}
+          />
+          <LayoutButton
+            on={layout === "duplo"}
+            label="2 painéis"
+            onClick={() => {
+              setReframe("composite");
+              if (regions.length < 2) setRegions(defaultRegions);
+            }}
+          />
+        </div>
+      </Field>
+
+      {layout === "auto" && (
+        <Field label="Como enquadrar">
+          <div className="flex flex-col gap-1.5">
+            {AUTO_MODES.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setReframe(option.value)}
+                className={cn(
+                  "cursor-pointer rounded-2xl border px-3 py-2 text-left transition-colors",
+                  reframe === option.value
+                    ? "border-accent bg-accent/10"
+                    : "border-line hover:bg-surface-2",
+                )}
+              >
+                <span className="block text-[12px] font-medium">{option.label}</span>
+                <span className="block text-[11px] text-faint">{option.hint}</span>
+              </button>
+            ))}
+          </div>
+        </Field>
+      )}
+
+      {keyframing && (
+        <>
+          <Field label={`Zoom — ${zoom.toFixed(1)}×`}>
+            <input
+              type="range"
+              min={1}
+              max={4}
+              step={0.05}
+              value={zoom}
+              onChange={(event) => setZoom(Number(event.target.value))}
+              className="w-full accent-(--c-accent)"
+            />
+            <p className="mt-1 text-[11px] text-faint">
+              Fecha o enquadramento no corte inteiro. O tamanho da janela não pode variar no
+              tempo — só para onde ela aponta.
+            </p>
+          </Field>
+
+          <div className="rounded-2xl border border-line bg-surface-2 p-3">
+            <p className="text-[11px] leading-relaxed text-muted">
+              <span className="font-medium text-ink">{keyframes.length} posição
+              {keyframes.length === 1 ? "" : "es"}</span> marcada
+              {keyframes.length === 1 ? "" : "s"}. Leve a cabeça de leitura até o instante em que
+              o enquadramento deve mudar, clique em <span className="text-ink">Marcar posição
+              aqui</span> e arraste o retângulo para o novo lugar.
+            </p>
+          </div>
+        </>
+      )}
+
+      {composing && (
+        <Field label={`Divisão da tela — ${Math.round((regions[0]?.weight ?? 0.6) * 100)}% em cima`}>
+          <input
+            type="range"
+            min={0.2}
+            max={0.8}
+            step={0.02}
+            value={regions[0]?.weight ?? 0.6}
+            onChange={(event) => onSplitWeight(Number(event.target.value))}
+            className="w-full accent-(--c-accent)"
+          />
+          <p className="mt-1 text-[11px] text-faint">
+            As marcações no vídeo já têm a proporção da faixa final, então o que você marca é
+            o que sai. Arraste para mover e use a alça do canto para escalar.
+          </p>
+        </Field>
+      )}
+
+      <div className="rounded-2xl border border-line bg-surface-2 p-3">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[11px] font-medium tracking-wide text-faint uppercase">
+            Recomendação
+          </span>
+          <button
+            className="cursor-pointer text-[11px] text-accent hover:underline disabled:opacity-50"
+            onClick={onReanalyse}
+            disabled={suggesting}
+          >
+            {suggesting ? "analisando…" : "reanalisar"}
+          </button>
+        </div>
+        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-muted">
+          <Wand2 className="mt-0.5 size-3.5 shrink-0 text-faint" strokeWidth={1.9} />
+          {suggestion ? suggestion.reason : suggesting ? "Detectando rostos…" : "—"}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function TrimTab({
+  start,
+  end,
+  duration,
+  mediaDuration,
+  onStart,
+  onEnd,
+  formats,
+  selected,
+  onToggleFormat,
+  suggested,
+}: {
+  start: number;
+  end: number;
+  duration: number;
+  mediaDuration: number;
+  onStart: (value: number) => void;
+  onEnd: (value: number) => void;
+  formats: FormatOption[];
+  selected: AspectRatio[];
+  onToggleFormat: (value: AspectRatio) => void;
+  suggested?: string;
+}) {
+  return (
+    <>
+      <TimeControl label="Início" value={start} max={mediaDuration} onChange={onStart} />
+      <TimeControl label="Fim" value={end} max={mediaDuration} onChange={onEnd} />
+
+      <p className="text-[12px] text-faint">
+        Duração{" "}
+        <span className={cn("num", duration < 5 || duration > 180 ? "text-amber" : "text-ink")}>
+          {duration.toFixed(1)}s
+        </span>
+      </p>
+
+      <Field label="Formatos a gerar">
+        <div className="grid grid-cols-2 gap-1.5">
+          {formats.map((option) => (
+            <button
+              key={option.value}
+              onClick={() => onToggleFormat(option.value)}
+              className={cn(
+                "relative cursor-pointer rounded-2xl border px-3 py-2 text-left transition-colors",
+                selected.includes(option.value)
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-line text-muted hover:bg-surface-2",
+              )}
+            >
+              <span className="block text-[12px] font-semibold">{option.value}</span>
+              <span className="num block text-[11px] opacity-70">
+                {option.width}×{option.height}
+              </span>
+              {suggested === option.value && (
+                <span className="absolute top-1.5 right-2 text-[10px] text-accent">★</span>
+              )}
+            </button>
           ))}
         </div>
+        <p className="mt-1.5 text-[11px] text-faint">O primeiro marcado é o da prévia.</p>
+      </Field>
+    </>
+  );
+}
+
+function CaptionsTab({
+  burn,
+  setBurn,
+  style,
+  setStyle,
+  wordCount,
+}: {
+  burn: boolean;
+  setBurn: (value: boolean) => void;
+  style: SubtitleStyle;
+  setStyle: (update: (previous: SubtitleStyle) => SubtitleStyle) => void;
+  wordCount: number;
+}) {
+  const positioned = style.pos_x !== null && style.pos_y !== null;
+
+  return (
+    <>
+      <button
+        onClick={() => setBurn(!burn)}
+        className={cn(
+          "flex cursor-pointer items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-left transition-colors",
+          burn ? "border-accent bg-accent/10" : "border-line hover:bg-surface-2",
+        )}
+      >
+        <span className="min-w-0">
+          <span className="block text-[13px] font-medium">
+            {burn ? "Com legenda" : "Sem legenda"}
+          </span>
+          <span className="block text-[11px] text-faint">
+            {burn ? `${wordCount} palavras neste trecho` : "o vídeo sai limpo"}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors",
+            burn ? "bg-accent" : "bg-surface-3",
+          )}
+        >
+          <span
+            className={cn(
+              "size-4 rounded-full bg-bg transition-transform",
+              burn && "translate-x-4",
+            )}
+          />
+        </span>
+      </button>
+
+      {burn && (
+        <>
+          <Field label="Tipo da legenda">
+            <div className="flex flex-col gap-1.5">
+              {SUBTITLE_PRESETS.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => setStyle((s) => ({ ...s, preset: option.value }))}
+                  className={cn(
+                    "cursor-pointer rounded-2xl border px-3 py-2 text-left transition-colors",
+                    style.preset === option.value
+                      ? "border-accent bg-accent/10"
+                      : "border-line hover:bg-surface-2",
+                  )}
+                >
+                  <span className="block text-[12px] font-medium">{option.label}</span>
+                  <span className="block text-[11px] text-faint">{option.hint}</span>
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Posição">
+            <div className="rounded-2xl border border-line bg-surface-2 px-3 py-2.5">
+              <p className="text-[11px] leading-relaxed text-muted">
+                {positioned
+                  ? "Posição livre: arraste a legenda na prévia para mudar."
+                  : "Arraste a legenda na prévia para colocá-la onde quiser."}
+              </p>
+              {positioned && (
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="num text-[11px] text-faint">
+                    {Math.round((style.pos_x ?? 0) * 100)}% × {Math.round((style.pos_y ?? 0) * 100)}%
+                  </span>
+                  <Chip onClick={() => setStyle((s) => ({ ...s, pos_x: null, pos_y: null }))}>
+                    Voltar para a base
+                  </Chip>
+                </div>
+              )}
+            </div>
+          </Field>
+        </>
       )}
+
+      <Field label={`Tamanho da fonte — ${style.font_size}px`}>
+        <input
+          type="range"
+          min={40}
+          max={140}
+          step={2}
+          value={style.font_size}
+          disabled={!burn}
+          onChange={(event) =>
+            setStyle((s) => ({ ...s, font_size: Number(event.target.value) }))
+          }
+          className="w-full accent-(--c-accent) disabled:opacity-40"
+        />
+      </Field>
+
+      {/* Com posição livre o `margin_v` é ignorado pelo ASS, então some daqui
+          para não sugerir um controle que não faz nada. */}
+      {!positioned && (
+        <Field label={`Altura na tela — ${style.margin_v}px da base`}>
+          <input
+            type="range"
+            min={80}
+            max={1200}
+            step={10}
+            value={style.margin_v}
+            disabled={!burn}
+            onChange={(event) => setStyle((s) => ({ ...s, margin_v: Number(event.target.value) }))}
+            className="w-full accent-(--c-accent) disabled:opacity-40"
+          />
+        </Field>
+      )}
+
+      {style.preset !== "word" && (
+      <Field label={`Palavras por vez — ${style.max_words}`}>
+        <input
+          type="range"
+          min={1}
+          max={8}
+          step={1}
+          value={style.max_words}
+          disabled={!burn}
+          onChange={(event) => setStyle((s) => ({ ...s, max_words: Number(event.target.value) }))}
+          className="w-full accent-(--c-accent) disabled:opacity-40"
+        />
+      </Field>
+      )}
+
+      <Field label="Cor do destaque">
+        <div className="flex flex-wrap gap-2">
+          {PALETTE.map((color) => (
+            <button
+              key={color}
+              onClick={() => setStyle((s) => ({ ...s, highlight_color: color }))}
+              disabled={!burn}
+              className={cn(
+                "size-8 cursor-pointer rounded-full border-2 transition-transform disabled:opacity-40",
+                style.highlight_color === color ? "scale-110 border-ink" : "border-line-strong",
+              )}
+              style={{ backgroundColor: color }}
+              aria-label={color}
+            />
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Cor do texto">
+        <div className="flex flex-wrap gap-2">
+          {["#FFFFFF", "#E2E8F0", "#0F172A"].map((color) => (
+            <button
+              key={color}
+              onClick={() => setStyle((s) => ({ ...s, primary_color: color }))}
+              disabled={!burn}
+              className={cn(
+                "size-8 cursor-pointer rounded-full border-2 transition-transform disabled:opacity-40",
+                style.primary_color === color ? "scale-110 border-accent" : "border-line-strong",
+              )}
+              style={{ backgroundColor: color }}
+              aria-label={color}
+            />
+          ))}
+        </div>
+      </Field>
+    </>
+  );
+}
+
+// ------------------------------------------------------------- átomos
+
+/**
+ * As faixas do layout composto, listadas abaixo do vídeo.
+ *
+ * Ocupa o lugar que a timeline de câmera tem nos outros modos — sem ela a
+ * coluna ficava com um buraco do tamanho da tela.
+ */
+function BandList({
+  regions,
+  active,
+  onSelect,
+}: {
+  regions: LayoutRegion[];
+  active: number;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[12px] font-medium">Faixas</span>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {regions.map((region, index) => (
+          <button
+            key={index}
+            onClick={() => onSelect(index)}
+            className={cn(
+              "flex cursor-pointer items-center gap-2.5 rounded-2xl border px-3 py-2 text-left transition-colors",
+              index === active ? "border-accent bg-accent/10" : "border-line hover:bg-surface-2",
+            )}
+          >
+            <span
+              className={cn(
+                "num flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+                index === 0 ? "bg-accent text-accent-ink" : "bg-amber text-accent-ink",
+              )}
+            >
+              {index + 1}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-medium">
+                {region.label || `Faixa ${index + 1}`}
+              </span>
+              <span className="num block text-[11px] text-faint">
+                {Math.round(region.weight * 100)}% da altura
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-faint">
+        Clique para focar uma faixa e arraste o retângulo dela no vídeo.
+      </p>
     </div>
   );
 }
 
-interface TimeControlProps {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <span className="mb-1.5 block text-[11px] font-medium tracking-wide text-muted uppercase">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function LayoutButton({
+  on,
+  label,
+  onClick,
+}: {
+  on: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "cursor-pointer rounded-2xl border px-2 py-2 text-[11px] font-medium transition-colors",
+        on ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:bg-surface-2",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+function TimeControl({
+  label,
+  value,
+  max,
+  onChange,
+}: {
   label: string;
   value: number;
   max: number;
   onChange: (value: number) => void;
-  onNudge: (delta: number) => void;
-}
-
-function TimeControl({ label, value, max, onChange, onNudge }: TimeControlProps) {
+}) {
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</span>
-        <span className="font-mono text-xs text-slate-300">{clock(value)}</span>
+        <span className="text-[11px] font-medium tracking-wide text-muted uppercase">{label}</span>
+        <span className="num text-[12px] text-ink">{clock(value)}</span>
       </div>
       <div className="flex items-center gap-2">
-        <button
-          className="rounded border border-ink-600 px-2 py-0.5 text-xs text-slate-400 hover:bg-ink-800"
-          onClick={() => onNudge(-1)}
-        >
-          −1s
-        </button>
+        <Chip onClick={() => onChange(Math.max(0, value - 1))}>−1s</Chip>
         <input
           type="range"
           min={0}
@@ -691,14 +1119,10 @@ function TimeControl({ label, value, max, onChange, onNudge }: TimeControlProps)
           step={0.1}
           value={value}
           onChange={(event) => onChange(Number(event.target.value))}
-          className="flex-1 accent-brand-500"
+          className="flex-1 accent-(--c-accent)"
+          aria-label={label}
         />
-        <button
-          className="rounded border border-ink-600 px-2 py-0.5 text-xs text-slate-400 hover:bg-ink-800"
-          onClick={() => onNudge(1)}
-        >
-          +1s
-        </button>
+        <Chip onClick={() => onChange(Math.min(max, value + 1))}>+1s</Chip>
       </div>
     </div>
   );
