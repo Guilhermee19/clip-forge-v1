@@ -58,6 +58,8 @@ Veja o [tutorial completo de instalação e desenvolvimento no Windows](docs/ins
 
 ### Linux / macOS
 
+Consulte o [guia para Linux e macOS](docs/instalacao-linux-macos.md). Nesses sistemas, execute o script Bash no terminal; o `.bat` apenas apresenta as instruções.
+
 ```bash
 bash scripts/setup.sh
 ```

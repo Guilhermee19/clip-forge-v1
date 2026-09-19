@@ -8,7 +8,7 @@ Extraia o ZIP completo do projeto para uma pasta sua, por exemplo `C:\Projetos\c
 
 ## 2. Executar a instalação
 
-Dê dois cliques em **`setup.bat`**, na raiz do projeto. Ou abra um PowerShell nessa pasta:
+Dê dois cliques em **`setup.bat`**, na raiz do projeto, e escolha **1 — Windows** no menu. As opções Linux e macOS mostram as instruções para esses sistemas. Ou abra um PowerShell nessa pasta:
 
 ```powershell
 .\setup.bat

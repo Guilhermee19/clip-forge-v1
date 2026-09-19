@@ -2,6 +2,65 @@
 setlocal
 title ClipForge :: instalacao
 cd /d "%~dp0"
+rem Argumentos existentes continuam executando o setup Windows diretamente.
+if /i "%~1"=="--linux" goto linux
+if /i "%~1"=="--macos" goto macos
+if not "%~1"=="" goto windows
+if defined CLIPFORGE_NONINTERACTIVE goto windows
+
+:menu
+echo.
+echo   ClipForge - escolha o sistema de destino
+echo.
+echo   [1] Windows - instalar neste computador
+echo   [2] Linux   - instrucoes para o terminal Linux
+echo   [3] macOS   - instrucoes para o terminal do Mac
+echo   [4] Sair
+echo.
+choice /c 1234 /n /m "Escolha [1-4]: "
+if errorlevel 4 exit /b 0
+if errorlevel 3 goto macos
+if errorlevel 2 goto linux
+if errorlevel 1 goto windows
+exit /b 1
+
+:linux
+echo.
+echo   LINUX
+echo   Este .bat funciona no Windows. No Linux, abra o Terminal.
+echo   Tenha Python 3.10, Node.js 22+, Git, FFmpeg e ffprobe instalados.
+echo   Entre na pasta do projeto e execute:
+echo.
+echo     bash scripts/setup.sh
+echo.
+echo   Para iniciar depois da instalacao:
+echo     bash start.sh
+echo.
+echo   Guia: docs/instalacao-linux-macos.md
+goto instructions_done
+
+:macos
+echo.
+echo   MACOS
+echo   Este .bat funciona no Windows. No Mac, abra o Terminal.
+echo   Tenha Python 3.10, Node.js 22+, Git, FFmpeg e ffprobe instalados.
+echo   Entre na pasta do projeto e execute:
+echo.
+echo     bash scripts/setup.sh
+echo.
+echo   O setup do Mac usa CPU, sem bibliotecas CUDA da Nvidia.
+echo   Para iniciar depois da instalacao:
+echo     bash start.sh
+echo.
+echo   Guia: docs/instalacao-linux-macos.md
+goto instructions_done
+
+:instructions_done
+echo   Nenhum programa foi instalado no Windows por esta opcao.
+if not defined CLIPFORGE_NONINTERACTIVE pause
+exit /b 0
+
+:windows
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup.ps1" %*
 set "SETUP_EXIT=%ERRORLEVEL%"
 echo.
