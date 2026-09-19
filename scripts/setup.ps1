@@ -84,7 +84,7 @@ try {
     Write-Host "`n[1/6] Python 3.10 x64" -ForegroundColor Cyan
     $python = Find-ProjectPython
     if (-not $python) {
-        Install-Prerequisite 'Python.Python.3.10' 'https://www.python.org/downloads/release/python-31011/'
+        Install-Prerequisite 'Python.Python.3.10' 'https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe'
         $python = Find-ProjectPython
         if (-not $python) { throw 'Python 3.10 x64 ainda nao encontrado. Reabra o terminal e rode setup.bat.' }
     }

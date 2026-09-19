@@ -25,7 +25,7 @@ O instalador apresenta seis etapas:
 
 Alguns instaladores podem pedir autorização do Windows. O WinGet recebe as opções de aceitação dos contratos de instalação. Se ele estiver ausente ou falhar, o script mostra e abre o site de download correspondente, depois interrompe. Conclua a instalação manual, abra um novo terminal e execute `setup.bat` novamente.
 
-Para Python manual, use o [instalador Windows de 64 bits do Python 3.10.11](https://www.python.org/downloads/release/python-31011/). Instale também o launcher `py`. Não basta instalar Python 3.10 e reutilizar uma `.venv` criada com 3.14; o setup verifica esse caso.
+Para Python manual, use o [download direto do Python 3.10.11 para Windows de 64 bits](https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe). Abra o arquivo `python-3.10.11-amd64.exe` baixado e instale também o launcher `py`. Não basta instalar Python 3.10 e reutilizar uma `.venv` criada com 3.14; o setup verifica esse caso.
 
 **Ao terminar, feche o terminal e abra outro** para carregar o PATH atualizado. Você pode repetir o setup depois de uma falha; `.env` é preservado. O `npm ci` reinstala `node_modules` conforme o lockfile.
 
