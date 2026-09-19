@@ -1,9 +1,11 @@
 # ==========================================================================
-# ClipForge - dependencias do backend (Python 3.10+)
+# ClipForge - dependencias do backend (Python 3.10.x, 64 bits)
+# Runtime usado no projeto: Python 3.10.11 (o pip instala pacotes, nao o Python).
+# Use Python 3.10.x nesta maquina antes de criar a venv.
 #
 # INSTALACAO COM CUDA (recomendado, GPU Nvidia):
 #
-#   python -m venv .venv
+#   py -3.10 -m venv .venv          (Windows; ou execute setup.bat na raiz)
 #   .venv\Scripts\activate            (Windows)   |   source .venv/bin/activate  (Linux)
 #   pip install --upgrade pip
 #   pip install -r backend/requirements.txt

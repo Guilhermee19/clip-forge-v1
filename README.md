@@ -32,10 +32,10 @@ Cada etapa vive em um módulo próprio em [backend/app/core/](backend/app/core/)
 
 | Item | Versão | Observação |
 |------|--------|------------|
-| Python | 3.10+ | |
+| Python | 3.10.x (64 bits) | versão usada pelas dependências fixadas |
 | FFmpeg | 6+ | precisa ter `h264_nvenc` compilado |
 | GPU Nvidia | RTX/GTX com CUDA | opcional, mas a diferença é de horas |
-| Node.js | 18+ | apenas para a interface web |
+| Node.js | 22+ | setup instala a versão LTS quando necessário |
 | [Ollama](https://ollama.com) | — | opcional; sem ele a seleção cai no modo heurístico |
 
 > **yt-dlp:** mantenha atualizado (`pip install --upgrade yt-dlp`). O YouTube muda a extração de assinatura com frequência, e uma versão velha simplesmente para de enxergar os formatos de vídeo. O `doctor` avisa quando a sua passa de 120 dias.
@@ -48,8 +48,12 @@ Cada etapa vive em um módulo próprio em [backend/app/core/](backend/app/core/)
 
 ### Windows
 
+Execute **`setup.bat`** na raiz para instalar os pré-requisitos, preparar a venv correta e verificar o frontend. Se um programa não puder ser instalado pelo terminal, o setup abre o site de download.
+
+Veja o [tutorial completo de instalação e desenvolvimento no Windows](docs/instalacao-windows.md), incluindo CPU/GPU, VS Code e solução de erros.
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+.\setup.bat
 ```
 
 ### Linux / macOS

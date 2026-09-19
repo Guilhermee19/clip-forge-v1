@@ -7,7 +7,7 @@ name = "clipforge"
 version = "0.1.0"
 description = "Alternativa local e open-source ao Opus Clip: transforma lives e podcasts em cortes verticais 9:16 com legendas animadas."
 readme = "../README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.11"
 license = { text = "MIT" }
 authors = [{ name = "Guilherme" }]
 

@@ -14,6 +14,11 @@ command -v python3 >/dev/null || { echo "Python 3.10+ e necessario."; exit 1; }
 VERSION=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 echo "Python $VERSION detectado."
 
+if [[ "$VERSION" != "3.10" ]]; then
+  echo "Python 3.10.x e necessario (versao do projeto: 3.10.11)."
+  exit 1
+fi
+
 if [ ! -d ".venv" ]; then
   echo "Criando ambiente virtual..."
   python3 -m venv .venv
