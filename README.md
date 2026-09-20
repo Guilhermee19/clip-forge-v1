@@ -46,6 +46,12 @@ Cada etapa vive em um módulo próprio em [backend/app/core/](backend/app/core/)
 
 ## Instalação
 
+### Docker (Windows, Linux e macOS)
+
+Para rodar as dependências em containers, abra `setup.bat` e escolha **4 — Docker**, ou execute `docker compose up --build -d --wait` no terminal. É necessário ter Docker com Compose instalado e iniciado. O modo Docker usa CPU.
+
+Veja o [tutorial Docker](docs/instalacao-docker.md) para instalação, modelos, arquivos persistentes e comandos para parar e atualizar.
+
 ### Windows
 
 Execute **`setup.bat`** na raiz para instalar os pré-requisitos, preparar a venv correta e verificar o frontend. Se um programa não puder ser instalado pelo terminal, o setup abre o site de download.

@@ -1,0 +1,49 @@
+name: clipforge
+
+services:
+  backend:
+    platform: linux/amd64
+    build: .
+    environment:
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+      WHISPER_MODEL: ${DOCKER_WHISPER_MODEL:-small}
+      VIDEO_ENCODER: libx264
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${DOCKER_OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+      HF_HOME: /models/huggingface
+    ports:
+      - "127.0.0.1:${DOCKER_API_PORT:-8000}:8000"
+    volumes:
+      - ./output:/app/output
+      - whisper-models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "127.0.0.1:${DOCKER_WEB_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+
+volumes:
+  whisper-models:
+  ollama-models:

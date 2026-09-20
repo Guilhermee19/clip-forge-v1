@@ -16,6 +16,8 @@ Dê dois cliques em **`setup.bat`**, na raiz do projeto, e escolha **1 — Windo
 
 O instalador apresenta seis etapas:
 
+Para instalar as dependências em containers, escolha **4 — Docker** no menu e siga o [tutorial Docker](instalacao-docker.md). As seis etapas abaixo descrevem a opção Windows nativa.
+
 1. Procura **Python 3.10 x64**, inclusive pelo launcher `py`, mesmo que o Python padrão seja 3.14. Se faltar, tenta instalar pelo WinGet.
 2. Verifica Node.js 22+ com npm, Git, FFmpeg e ffprobe. Instala os programas ausentes pelo WinGet; para Node.js, usa a versão LTS disponível.
 3. Detecta Nvidia pelo `nvidia-smi`, cria a `.venv` com Python 3.10 e instala o backend, Ruff e pytest. Uma `.venv` incompatível é movida para `.venv-backup-<identificador>` na própria pasta, sem apagar seu conteúdo. Esse backup serve para recuperar arquivos; ambientes virtuais movidos não são portáveis.

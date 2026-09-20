@@ -1,0 +1,16 @@
+**
+!Dockerfile
+!backend/
+!backend/**
+!frontend/
+!frontend/**
+!docker/
+!docker/**
+**/node_modules
+**/dist
+**/__pycache__
+**/.venv
+**/.env
+**/.env.*
+**/*.pyc
+**/*.tsbuildinfo

@@ -5,6 +5,7 @@ cd /d "%~dp0"
 rem Argumentos existentes continuam executando o setup Windows diretamente.
 if /i "%~1"=="--linux" goto linux
 if /i "%~1"=="--macos" goto macos
+if /i "%~1"=="--docker" goto docker
 if not "%~1"=="" goto windows
 if defined CLIPFORGE_NONINTERACTIVE goto windows
 
@@ -15,10 +16,12 @@ echo.
 echo   [1] Windows - instalar neste computador
 echo   [2] Linux   - instrucoes para o terminal Linux
 echo   [3] macOS   - instrucoes para o terminal do Mac
-echo   [4] Sair
+echo   [4] Docker  - rodar tudo em containers
+echo   [5] Sair
 echo.
-choice /c 1234 /n /m "Escolha [1-4]: "
-if errorlevel 4 exit /b 0
+choice /c 12345 /n /m "Escolha [1-5]: "
+if errorlevel 5 exit /b 0
+if errorlevel 4 goto docker
 if errorlevel 3 goto macos
 if errorlevel 2 goto linux
 if errorlevel 1 goto windows
@@ -62,6 +65,14 @@ exit /b 0
 
 :windows
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup.ps1" %*
+goto finish
+
+:docker
+set "DOCKER_ARGS="
+if defined CLIPFORGE_NONINTERACTIVE set "DOCKER_ARGS=-NonInteractive"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup-docker.ps1" %DOCKER_ARGS%
+
+:finish
 set "SETUP_EXIT=%ERRORLEVEL%"
 echo.
 if not "%SETUP_EXIT%"=="0" echo A instalacao nao foi concluida. Veja o erro acima.
